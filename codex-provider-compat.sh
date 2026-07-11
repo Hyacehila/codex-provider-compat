@@ -34,7 +34,8 @@ ObjC.import('Foundation');
 function symlinkDestination(p) {
   let e = Ref();
   let d = $.NSFileManager.defaultManager.destinationOfSymbolicLinkAtPathError($(p), e);
-  return d ? d.js : null;
+  let value = d ? d.js : null;
+  return typeof value === 'string' ? value : null;
 }
 function normalizeAppleSystemAliasPath(p, alias, target) {
   if (!alias) return p;
@@ -108,12 +109,15 @@ function standard(p) {
 function isSymlink(p) {
   let linkError = Ref();
   let destination = $.NSFileManager.defaultManager.destinationOfSymbolicLinkAtPathError($(p), linkError);
-  if (destination) return true;
+  let destinationValue = destination ? destination.js : null;
+  if (typeof destinationValue === 'string') return true;
   let e = Ref();
   let attrs = $.NSFileManager.defaultManager.attributesOfItemAtPathError($(p), e);
-  if (!attrs) return false;
+  let attrsValue = attrs ? attrs.js : null;
+  if (attrsValue === null || attrsValue === undefined) return false;
   let t = attrs.objectForKey($.NSFileType);
-  return !!t && t.isEqualToString($.NSFileTypeSymbolicLink);
+  let typeValue = t ? t.js : null;
+  return typeValue === $.NSFileTypeSymbolicLink.js;
 }
 function checkComponents(p) {
   let parts = p.split('/'), cur = '';

@@ -605,6 +605,17 @@ t_system_alias_normalization() {
   ' "$TOOL" > "$guard_fn" || return 1
   . "$guard_fn" || return 1
   assert_eq "$canonical_child" "$(path_guard "$canonical_root" "$canonical_child" inside)" existing-path-guard || return 1
+  guard_home="$SUITE_ROOT/path-guard-home"
+  /bin/mkdir "$guard_home" || return 1
+  canonical_guard_home=$(absolute_path "$guard_home") || return 1
+  missing_child="$canonical_guard_home/not-yet-created/child"
+  assert_eq "$missing_child" "$(path_guard "$canonical_guard_home" "$missing_child" inside)" missing-path-guard || return 1
+  guard_outside="$SUITE_ROOT/path-guard-outside"
+  /bin/mkdir "$guard_outside" || return 1
+  /bin/ln -s "$guard_outside" "$guard_home/live-link" || return 1
+  if path_guard "$canonical_guard_home" "$canonical_guard_home/live-link/child" inside >/dev/null 2>&1; then return 1; fi
+  /bin/ln -s "$guard_home/missing-target" "$guard_home/dangling-link" || return 1
+  if path_guard "$canonical_guard_home" "$canonical_guard_home/dangling-link/child" inside >/dev/null 2>&1; then return 1; fi
   new_home alias-user-link
   outside="$SUITE_ROOT/alias-user-target"
   /bin/mkdir "$outside" || return 1
