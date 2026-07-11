@@ -166,6 +166,39 @@ function Get-Sha256([string]$Path) {
     return (($hash | ForEach-Object { $_.ToString('X2') }) -join '')
 }
 
+function Get-FileAclSemanticFingerprint($Acl) {
+    try { $owner=$Acl.GetOwner([Security.Principal.SecurityIdentifier]).Value } catch { $owner=[string]$Acl.Owner }
+    try { $group=$Acl.GetGroup([Security.Principal.SecurityIdentifier]).Value } catch { $group=[string]$Acl.Group }
+    $rules=New-Object Collections.Generic.List[string]
+    foreach($rule in $Acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])){
+        [void]$rules.Add(('{0}|{1}|{2}|{3}|{4}' -f $rule.IdentityReference.Value,[int64]$rule.FileSystemRights,[string]$rule.AccessControlType,[string]$rule.InheritanceFlags,[string]$rule.PropagationFlags))
+    }
+    $sorted=@($rules|Sort-Object)
+    return ($owner,$group,[string]$Acl.AreAccessRulesProtected,($sorted-join';'))-join"`n"
+}
+
+function Test-FileAclEquivalent($Left,$Right) {
+    if($null-eq$Left-or$null-eq$Right){return $false}
+    if($Left.Sddl-eq$Right.Sddl){return $true}
+    return (Get-FileAclSemanticFingerprint $Left)-eq(Get-FileAclSemanticFingerprint $Right)
+}
+
+function Set-FileAclFromSourceIfNeeded($SourceAcl,[string]$Destination,[string]$Label) {
+    $destinationAcl=Get-Acl -LiteralPath $Destination
+    if(-not(Test-FileAclEquivalent $SourceAcl $destinationAcl)){
+        try{Set-Acl -LiteralPath $Destination -AclObject $SourceAcl}catch{throw "could not preserve permissions for ${Label}: $($_.Exception.Message)"}
+        $destinationAcl=Get-Acl -LiteralPath $Destination
+    }
+    if(-not(Test-FileAclEquivalent $SourceAcl $destinationAcl)){throw "$Label ACL verification failed"}
+}
+
+function Test-PathAclMatchesSddl([string]$Path,[string]$Sddl) {
+    if([string]::IsNullOrEmpty($Sddl)){return $true}
+    $expected=New-Object Security.AccessControl.FileSecurity
+    try{$expected.SetSecurityDescriptorSddlForm($Sddl)}catch{return $false}
+    return Test-FileAclEquivalent $expected (Get-Acl -LiteralPath $Path)
+}
+
 function Get-UniquePath([string]$BasePath) {
     if (-not (Test-Path -LiteralPath $BasePath)) { return $BasePath }
     for ($i = 1; $i -lt 1000; $i++) {
@@ -212,7 +245,7 @@ function Write-AtomicBytes([string]$CodexRoot, [string]$Path, [byte[]]$Bytes, [s
         try { $stream.Write($Bytes, 0, $Bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
         if ((Get-Sha256 $tmp) -ne (Get-BytesSha256 $Bytes)) { throw "write verification failed for $Path" }
         if ($destinationExisted) {
-            try { Set-Acl -LiteralPath $tmp -AclObject (Get-Acl -LiteralPath $Path) } catch { throw "could not preserve permissions for $Path" }
+            Set-FileAclFromSourceIfNeeded (Get-Acl -LiteralPath $Path) $tmp $Path
         }
         if (-not $SuppressFault) {
             $isInitialTransactionWrite = -not $destinationExisted -and (Test-PathEqual $Path (Get-TransactionPath $CodexRoot))
@@ -407,12 +440,11 @@ function Copy-VerifiedFileWithAcl([string]$CodexRoot,[string]$Source,[string]$De
     $sourceAcl=Get-Acl -LiteralPath $sourcePath;$created=$false
     try{
         $empty=New-Object IO.FileStream($destinationPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::WriteThrough);$empty.Dispose();$created=$true
-        Set-Acl -LiteralPath $destinationPath -AclObject $sourceAcl
-        if((Get-Acl -LiteralPath $destinationPath).Sddl-ne$sourceAcl.Sddl){throw "$Label ACL verification failed before copying content"}
+        Set-FileAclFromSourceIfNeeded $sourceAcl $destinationPath $Label
         $bytes=[IO.File]::ReadAllBytes($sourcePath);$stream=New-Object IO.FileStream($destinationPath,[IO.FileMode]::Open,[IO.FileAccess]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::WriteThrough)
         try{$stream.SetLength(0);$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)}finally{$stream.Dispose()}
         if((Get-Sha256 $destinationPath)-ne$ExpectedHash.ToUpperInvariant()){throw "$Label hash verification failed"}
-        if((Get-Acl -LiteralPath $destinationPath).Sddl-ne$sourceAcl.Sddl){throw "$Label ACL verification failed after copying content"}
+        if(-not(Test-FileAclEquivalent $sourceAcl (Get-Acl -LiteralPath $destinationPath))){throw "$Label ACL verification failed after copying content"}
     }catch{if($created-and(Test-Path -LiteralPath $destinationPath -PathType Leaf)){[IO.File]::Delete($destinationPath)};throw}
 }
 
@@ -871,7 +903,7 @@ function Invoke-Apply($Options,[string]$CodexRoot){
             if($cacheBackup){[IO.File]::Move($cachePath,$cacheBackup);if((Get-Sha256 $cacheBackup)-ne$cacheHash){throw 'cache backup verification failed'}};Set-TransactionPhase $CodexRoot $transaction 'cache-backed-up';Invoke-TestFault 'after-cache'
             if($env:CODEX_PROVIDER_COMPAT_TEST_MUTATE_CONFIG_BEFORE_WRITE){[IO.File]::AppendAllText($configPath,"# late-external-change`r`n",(New-Object Text.UTF8Encoding($false)))}
             $immediateConfigHash=Get-Sha256 $configPath;if(($plan.Analysis.Exists-and$immediateConfigHash-ne$plan.Analysis.Sha256)-or(-not$plan.Analysis.Exists-and$immediateConfigHash)){throw 'config.toml changed immediately before the atomic write'}
-            Invoke-TestFault 'config-write';Write-AtomicBytes $CodexRoot $configPath $plan.AfterBytes $nonce;if(-not$plan.Analysis.Exists){Set-PrivateFileAcl $configPath};if((Get-Sha256 $configPath)-ne(Get-BytesSha256 $plan.AfterBytes)){throw 'config hash verification failed'};if($plan.Analysis.Exists-and$plan.Analysis.Acl){$afterAcl=(Get-Acl -LiteralPath $configPath).Sddl;if($afterAcl-ne$plan.Analysis.Acl){throw 'config permissions changed unexpectedly'}};$check=Get-ConfigAnalysis $configPath;Assert-NoDuplicateOwnedKeys $check;if($check.Keys.model_catalog_json.Count-ne1-or-not([string]$check.Keys.model_catalog_json[0].Value).Replace('\','/').Equals($generatedPath.Replace('\','/'),[StringComparison]::OrdinalIgnoreCase)){throw 'config verification failed'};if($Options.EnableWebSearch-and($check.Keys.web_search.Count-ne1-or$check.Keys.web_search[0].Value-ne'live')){throw 'web_search config verification failed'};Set-TransactionPhase $CodexRoot $transaction 'config-written';Invoke-TestFault 'after-config'
+            Invoke-TestFault 'config-write';Write-AtomicBytes $CodexRoot $configPath $plan.AfterBytes $nonce;if(-not$plan.Analysis.Exists){Set-PrivateFileAcl $configPath};if((Get-Sha256 $configPath)-ne(Get-BytesSha256 $plan.AfterBytes)){throw 'config hash verification failed'};if($plan.Analysis.Exists-and$plan.Analysis.Acl-and-not(Test-PathAclMatchesSddl $configPath $plan.Analysis.Acl)){throw 'config permissions changed unexpectedly'};$check=Get-ConfigAnalysis $configPath;Assert-NoDuplicateOwnedKeys $check;if($check.Keys.model_catalog_json.Count-ne1-or-not([string]$check.Keys.model_catalog_json[0].Value).Replace('\','/').Equals($generatedPath.Replace('\','/'),[StringComparison]::OrdinalIgnoreCase)){throw 'config verification failed'};if($Options.EnableWebSearch-and($check.Keys.web_search.Count-ne1-or$check.Keys.web_search[0].Value-ne'live')){throw 'web_search config verification failed'};Set-TransactionPhase $CodexRoot $transaction 'config-written';Invoke-TestFault 'after-config'
             Invoke-TestFault 'state-write';Write-AtomicBytes $CodexRoot $transaction.paths.state $stateBytes $nonce;Read-State $CodexRoot|Out-Null;Set-TransactionPhase $CodexRoot $transaction 'state-written';Invoke-TestFault 'after-state'
             Remove-VerifiedOwnedFile $CodexRoot (Get-TransactionPath $CodexRoot) $null;Write-Info 'result=applied';Write-Info '完全退出并重新启动 Codex，然后新建任务/新 thread。';Write-Info '旧任务保留启动时的模型与工具快照，不会自动应用本次更改。';return $script:ExitSuccess
         }catch{
@@ -917,7 +949,7 @@ function Invoke-Rollback($Options,[string]$CodexRoot){
             if($deleteConfig){[IO.File]::Delete((Assert-SafeOwnedPath $CodexRoot $configPath))}else{Write-AtomicBytes $CodexRoot $configPath $afterBytes $nonce}
             if($deleteConfig){if(Test-Path -LiteralPath $configPath){throw 'rollback failed to restore the missing-config state'}}else{
                 if((Get-Sha256 $configPath)-ne(Get-BytesSha256 $afterBytes)){throw 'rollback config hash verification failed'}
-                if($analysis.Acl -and (Get-Acl -LiteralPath $configPath).Sddl-ne$analysis.Acl){throw 'rollback changed config permissions'}
+                if($analysis.Acl-and-not(Test-PathAclMatchesSddl $configPath $analysis.Acl)){throw 'rollback changed config permissions'}
                 $restoredAnalysis=Get-ConfigAnalysis $configPath;Assert-NoDuplicateOwnedKeys $restoredAnalysis
                 if([bool]$state.config.previous_model_catalog_json_present){if($restoredAnalysis.Keys.model_catalog_json.Count-ne1-or-not([string]$restoredAnalysis.Keys.model_catalog_json[0].Value).Equals([string]$state.config.previous_model_catalog_json,[StringComparison]::Ordinal)){throw 'rollback did not restore model_catalog_json'}}elseif($restoredAnalysis.Keys.model_catalog_json.Count-ne0){throw 'rollback did not remove model_catalog_json'}
                 if($state.config.web_search_modified-eq$true){if([bool]$state.config.previous_web_search_present){if($restoredAnalysis.Keys.web_search.Count-ne1-or-not([string]$restoredAnalysis.Keys.web_search[0].Value).Equals([string]$state.config.previous_web_search,[StringComparison]::Ordinal)){throw 'rollback did not restore web_search'}}elseif($restoredAnalysis.Keys.web_search.Count-ne0){throw 'rollback did not remove web_search'}}

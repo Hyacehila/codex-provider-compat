@@ -13,7 +13,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Windows PowerShell 5.1 syntax
         shell: powershell
         run: |
@@ -35,7 +35,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: PowerShell 7 syntax
         shell: pwsh
         run: |
@@ -57,7 +57,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Fixtures, encoding, whitespace, and delivery-boundary audit
         shell: pwsh
         run: |
@@ -92,9 +92,16 @@ jobs:
             if ([Array]::IndexOf($bytes, [byte]0x0D) -ge 0) { throw "$path must use LF without CR bytes" }
           }
 
-          $trailing = & git grep -n -I -E '[[:blank:]]+$' -- .
-          if ($LASTEXITCODE -eq 0) { throw "trailing whitespace found:`n$($trailing -join "`n")" }
-          if ($LASTEXITCODE -gt 1) { throw "git grep failed with exit code $LASTEXITCODE" }
+          $nativePreferenceExists = Test-Path variable:PSNativeCommandUseErrorActionPreference
+          if ($nativePreferenceExists) { $previousNativePreference = $PSNativeCommandUseErrorActionPreference; $PSNativeCommandUseErrorActionPreference = $false }
+          try {
+            $trailing = & git grep -n -I -E '[[:blank:]]+$' -- .
+            $grepExit = $LASTEXITCODE
+          } finally {
+            if ($nativePreferenceExists) { $PSNativeCommandUseErrorActionPreference = $previousNativePreference }
+          }
+          if ($grepExit -eq 0) { throw "trailing whitespace found:`n$($trailing -join "`n")" }
+          if ($grepExit -gt 1) { throw "git grep failed with exit code $grepExit" }
 
           # Audit production scripts only. The request-shape test intentionally owns a localhost TcpListener.
           $production = (Get-Content ./codex-provider-compat.ps1 -Raw) + "`n" + (Get-Content ./codex-provider-compat.sh -Raw)
@@ -116,8 +123,8 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: '22'
       - name: Install fixed Codex CLI
@@ -143,7 +150,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Prepare scripts and check shell syntax
         run: |
           chmod +x ./codex-provider-compat.sh ./tests/test-macos.sh

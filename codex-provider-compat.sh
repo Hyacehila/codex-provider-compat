@@ -48,10 +48,7 @@ function run(a) {
     cur += '/' + parts[i];
     let destination = symlinkDestination(cur);
     if (!destination) continue;
-    let allowedSystemAlias =
-      cur === '/var' && (destination === 'private/var' || destination === '/private/var') ||
-      cur === '/tmp' && (destination === 'private/tmp' || destination === '/private/tmp') ||
-      cur === '/etc' && (destination === 'private/etc' || destination === '/private/etc');
+    let allowedSystemAlias = cur === '/var' || cur === '/tmp' || cur === '/etc';
     if (!allowedSystemAlias && mode !== 'resolve') throw Error('symlink path component: ' + cur);
   }
   return $(lexical).stringByResolvingSymlinksInPath.stringByStandardizingPath.js;
