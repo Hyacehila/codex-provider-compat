@@ -1326,6 +1326,7 @@ validate_transaction_to_temp() {
 write_transaction() {
   prepared="$TMP_ROOT/transaction.new"
   jxa_write_transaction "$prepared" "$@" || return 1
+  jxa_validate_transaction "$prepared" "$CODEX_ROOT" >/dev/null || return 1
   atomic_install "$prepared" "$TX_PATH" "${TX_PRESERVE:-}" "$LOCK_NONCE" || return 1
   validate_transaction_to_temp
 }
@@ -1899,8 +1900,8 @@ rollback_cmd() {
   cache_backup=$(jxa_get "$TMP_ROOT/state-safe.json" cache.backup_path)
   for p in "$config" "$generated" "$cache" "$state"; do path_guard "$CODEX_ROOT" "$p" inside >/dev/null || return $EX_UNSAFE; done
   [ -z "$cache_backup" ] || path_guard "$CODEX_ROOT" "$cache_backup" inside >/dev/null || return $EX_UNSAFE
-  out="$TMP_ROOT/config.rollback"
-  rmeta=$(jxa_config rollback "$config" "$out" '' 0 "$TMP_ROOT/state-safe.json") || { warn 'owned config keys drifted'; return $EX_UNSAFE; }
+  rollback_out="$TMP_ROOT/config.rollback"
+  rmeta=$(jxa_config rollback "$config" "$rollback_out" '' 0 "$TMP_ROOT/state-safe.json") || { warn 'owned config keys drifted'; return $EX_UNSAFE; }
   printf '%s' "$rmeta" > "$TMP_ROOT/rollback-meta.json"
   before_confirm=$(config_fingerprint "$config")
   state_before_confirm=$(sha256 "$state")
@@ -1913,7 +1914,7 @@ rollback_cmd() {
   [ "$(sha256 "$state")" = "$state_before_confirm" ] || { warn 'state changed after confirmation'; return $EX_UNSAFE; }
   if [ "$(config_fingerprint "$config")" != "$before_confirm" ]; then
     warn 'config changed after confirmation; rebuilding the rollback plan'
-    rmeta=$(jxa_config rollback "$config" "$out" '' 0 "$TMP_ROOT/state-safe.json") || return $EX_UNSAFE
+    rmeta=$(jxa_config rollback "$config" "$rollback_out" '' 0 "$TMP_ROOT/state-safe.json") || return $EX_UNSAFE
     printf '%s' "$rmeta" > "$TMP_ROOT/rollback-meta.json"
     before_confirm=$(config_fingerprint "$config")
     confirm_write 'Config changed; apply the rebuilt rollback plan?' || return $EX_ERROR
@@ -1925,7 +1926,7 @@ rollback_cmd() {
   archive=$(unique_path "$CODEX_ROOT/provider-compat-state.json.rolled-back-$(timestamp)")
   for p in "$snapshot" "$pending" "$archive"; do path_guard "$CODEX_ROOT" "$p" inside >/dev/null || return $EX_UNSAFE; done
   config_before=$(sha256 "$config")
-  config_after=$(sha256 "$out")
+  config_after=$(sha256 "$rollback_out")
   config_mode_before=$(filemode "$config")
   state_hash=$(sha256 "$state")
   expected_generated_hash=$(jxa_get "$TMP_ROOT/state-safe.json" generated_catalog.sha256)
@@ -1996,7 +1997,7 @@ rollback_cmd() {
   if [ "$delete_config" -eq 1 ]; then
     /bin/rm -f "$config" || { recover_transaction; return $EX_UNSAFE; }
   else
-    atomic_install "$out" "$config" "$config" "$LOCK_NONCE" || { recover_transaction; return $EX_UNSAFE; }
+    atomic_install "$rollback_out" "$config" "$config" "$LOCK_NONCE" || { recover_transaction; return $EX_UNSAFE; }
   fi
   if [ "$delete_config" -eq 1 ]; then
     [ ! -e "$config" ] && [ ! -L "$config" ] || { recover_transaction; return $EX_UNSAFE; }
