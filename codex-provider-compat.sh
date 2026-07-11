@@ -41,6 +41,12 @@ function normalizeAppleSystemAliasPath(p, alias, target) {
   if (p !== alias && !p.startsWith(alias + '/')) throw Error('system alias prefix mismatch');
   return target + p.slice(alias.length);
 }
+function normalizeAppleSystemAliasResult(p) {
+  if (p === '/var' || p.startsWith('/var/')) return '/private' + p;
+  if (p === '/tmp' || p.startsWith('/tmp/')) return '/private' + p;
+  if (p === '/etc' || p.startsWith('/etc/')) return '/private' + p;
+  return p;
+}
 function run(a) {
   if (!a.length || !a[0]) throw Error('empty path');
   let mode = a[1] || 'strict';
@@ -68,7 +74,8 @@ function run(a) {
     if (mode !== 'resolve') throw Error('symlink path component: ' + cur);
   }
   let canonical = normalizeAppleSystemAliasPath(lexical, verifiedAlias, verifiedTarget);
-  return $(canonical).stringByResolvingSymlinksInPath.stringByStandardizingPath.js;
+  let resolved = $(canonical).stringByResolvingSymlinksInPath.stringByStandardizingPath.js;
+  return normalizeAppleSystemAliasResult(resolved);
 }
 JXA
 }

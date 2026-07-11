@@ -572,6 +572,10 @@ t_system_alias_normalization() {
   assert_eq '/private/var/cpc-alias-probe' "$(absolute_path '/var/cpc-alias-probe')" var-alias || return 1
   assert_eq '/private/tmp/cpc-alias-probe' "$(absolute_path '/tmp/cpc-alias-probe')" tmp-alias || return 1
   assert_eq '/private/etc/cpc-alias-probe' "$(absolute_path '/etc/cpc-alias-probe')" etc-alias || return 1
+  existing="$SUITE_ROOT/existing-alias-probe"
+  /bin/mkdir "$existing" || return 1
+  expected=$(printf '%s\n' "$existing" | /usr/bin/awk '{gsub(/\/+/,"/");if($0~/^\/(var|tmp|etc)(\/|$)/)print "/private"$0;else print $0}')
+  assert_eq "$expected" "$(absolute_path "$existing")" existing-system-alias || return 1
   new_home alias-user-link
   outside="$SUITE_ROOT/alias-user-target"
   /bin/mkdir "$outside" || return 1
