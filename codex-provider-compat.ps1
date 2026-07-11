@@ -148,8 +148,8 @@ function Assert-ExpectedPath([string]$Actual, [string]$Expected, [string]$Label)
 }
 
 function Assert-HashString($Value, [string]$Label, [bool]$AllowNull = $false) {
-    if ($AllowNull -and [string]::IsNullOrEmpty([string]$Value)) { return }
-    if ([string]$Value -notmatch '^[0-9A-Fa-f]{64}$') { throw "$Label is not a SHA-256 value" }
+    if ($null -eq $Value) { if ($AllowNull) { return }; throw "$Label is null" }
+    if ($Value -isnot [string] -or $Value -notmatch '^[0-9A-Fa-f]{64}$') { throw "$Label is not a SHA-256 string" }
 }
 
 function Get-BytesSha256([byte[]]$Bytes) {
@@ -684,6 +684,33 @@ function Release-Lock($Lock){if(-not $Lock){return};try{if(Test-Path -LiteralPat
 
 function Assert-BackupPath([string]$CodexRoot,[string]$Path,[string]$Pattern,[string]$Label,[bool]$AllowNull=$false){if($AllowNull -and [string]::IsNullOrEmpty($Path)){return};$safe=Assert-SafeOwnedPath $CodexRoot $Path;if(-not(Test-PathEqual (Split-Path -Parent $safe) $CodexRoot)){throw "$Label must be directly inside Codex home"};if([IO.Path]::GetFileName($safe) -notmatch $Pattern){throw "$Label has an invalid filename"}}
 
+function Assert-JsonObject($Value,[string]$Label){
+    if($null -eq $Value -or ($Value -isnot [Collections.IDictionary] -and $Value -isnot [pscustomobject])){throw "$Label must be a JSON object"}
+}
+function Assert-JsonBoolean($Value,[string]$Label){if($Value -isnot [bool]){throw "$Label must be a JSON boolean"}}
+function Assert-JsonString($Value,[string]$Label,[bool]$AllowEmpty=$true){if($Value -isnot [string] -or (-not$AllowEmpty -and $Value.Length-eq0)){throw "$Label must be a JSON string"}}
+function Assert-JsonInteger($Value,[string]$Label){
+    if($null -eq $Value -or $Value -is [bool]){throw "$Label must be a JSON integer"}
+    $integerCodes=@([TypeCode]::SByte,[TypeCode]::Byte,[TypeCode]::Int16,[TypeCode]::UInt16,[TypeCode]::Int32,[TypeCode]::UInt32,[TypeCode]::Int64,[TypeCode]::UInt64)
+    if($integerCodes -notcontains [Type]::GetTypeCode($Value.GetType())){throw "$Label must be a JSON integer"}
+}
+function Assert-JsonArray($Value,[string]$Label){if($Value -isnot [Array]){throw "$Label must be a JSON array"}}
+function Assert-JsonNull($Value,[string]$Label){if($null -ne $Value){throw "$Label must be null"}}
+function Assert-JsonTimestamp($Value,[string]$Label){Assert-JsonString $Value $Label $false;try{[DateTimeOffset]::Parse($Value)|Out-Null}catch{throw "$Label must be a timestamp string"}}
+
+function ConvertFrom-CompatJson([string]$Json){
+    $command=Get-Command ConvertFrom-Json
+    if($command.Parameters.ContainsKey('DateKind')){return $Json|ConvertFrom-Json -DateKind String}
+    return $Json|ConvertFrom-Json
+}
+
+function Assert-MapKeys($Map,[string[]]$Expected,[string]$Label){
+    Assert-JsonObject $Map $Label
+    if($Map -is [Collections.IDictionary]){$actual=@($Map.Keys)}else{$actual=@($Map.PSObject.Properties.Name)}
+    $actualText=@($actual|Sort-Object)-join',';$expectedText=@($Expected|Sort-Object)-join','
+    if(-not $actualText.Equals($expectedText,[StringComparison]::Ordinal)){throw "$Label fields do not match schema 1"}
+}
+
 function Assert-RestoreLiteral([string]$Literal,[string]$Key,$ExpectedValue){
     if($null -eq $Literal -or $Literal.Contains("`r") -or $Literal.Contains("`n")){throw "state contains an unsafe previous $Key literal"}
     $analysis=Get-ConfigAnalysisFromText '<state-literal>' $true "$Key = $Literal" $false "`n" $null $null
@@ -691,70 +718,87 @@ function Assert-RestoreLiteral([string]$Literal,[string]$Key,$ExpectedValue){
 }
 
 function Assert-ValidState([string]$CodexRoot,$State){
-    if($null -eq $State -or $State.schema_version -ne 1 -or $State.patch_id -ne $script:PatchId){throw 'state file schema or patch_id is not supported'}
-    $version=[string]$State.codex_version;if($version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$'){throw 'state has an invalid Codex version'}
+    Assert-MapKeys $State @('schema_version','patch_version','patch_id','codex_version','source_catalog','generated_catalog','config','cache','other_lite_models','applied_at') 'state'
+    Assert-MapKeys $State.source_catalog @('kind','url','path','sha256','model_count') 'state source_catalog'
+    Assert-MapKeys $State.generated_catalog @('path','sha256') 'state generated_catalog'
+    Assert-MapKeys $State.config @('path','backup_path','before_sha256','existed','had_bom','newline','original_mode','previous_model_catalog_json_present','previous_model_catalog_json','previous_model_catalog_json_literal','web_search_modified','previous_web_search_present','previous_web_search','previous_web_search_literal') 'state config'
+    Assert-MapKeys $State.cache @('original_path','backup_path','sha256') 'state cache'
+    Assert-JsonInteger $State.schema_version 'state schema_version';if($State.schema_version-ne1){throw 'state schema_version is not supported'}
+    Assert-JsonString $State.patch_version 'state patch_version' $false;if($State.patch_version-notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$'){throw 'state patch_version is invalid'}
+    Assert-JsonString $State.patch_id 'state patch_id' $false;if($State.patch_id-ne$script:PatchId){throw 'state patch_id is not supported'}
+    Assert-JsonString $State.codex_version 'state codex_version' $false;$version=$State.codex_version;if($version-notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$'){throw 'state has an invalid Codex version'}
+    Assert-JsonString $State.applied_at 'state applied_at' $false;Assert-JsonTimestamp $State.applied_at 'state applied_at'
+    Assert-JsonArray $State.other_lite_models 'state other_lite_models';foreach($slug in @($State.other_lite_models)){Assert-JsonString $slug 'state other_lite_models item' $false}
+    Assert-JsonString $State.source_catalog.kind 'state source_catalog.kind' $false;if($State.source_catalog.kind-notin@('local-file','official-github-tag')){throw 'state source catalog kind is invalid'}
+    Assert-JsonString $State.source_catalog.sha256 'state source_catalog.sha256' $false;Assert-HashString $State.source_catalog.sha256 'source catalog hash'
+    Assert-JsonInteger $State.source_catalog.model_count 'state source_catalog.model_count';if($State.source_catalog.model_count-lt$script:MinCatalogModels){throw 'state source catalog model_count is too small'}
+    if($State.source_catalog.kind-eq'official-github-tag'){
+        Assert-JsonNull $State.source_catalog.path 'state official source path';Assert-JsonString $State.source_catalog.url 'state official source URL' $false
+        $expectedUrl="https://raw.githubusercontent.com/openai/codex/rust-v$version/codex-rs/models-manager/models.json";if($State.source_catalog.url-ne$expectedUrl){throw 'state official source URL is invalid'}
+    }else{
+        Assert-JsonNull $State.source_catalog.url 'state local source URL';Assert-JsonString $State.source_catalog.path 'state local source path' $false
+    }
+    Assert-JsonString $State.generated_catalog.path 'state generated catalog path' $false;Assert-JsonString $State.generated_catalog.sha256 'state generated catalog hash' $false;Assert-HashString $State.generated_catalog.sha256 'generated catalog hash'
+    Assert-JsonString $State.config.path 'state config path' $false;Assert-JsonBoolean $State.config.existed 'state config.existed';Assert-JsonBoolean $State.config.had_bom 'state config.had_bom';Assert-JsonString $State.config.newline 'state config.newline' $false;if($State.config.newline-notin@('lf','crlf')){throw 'state config newline is invalid'}
+    if($null-ne$State.config.original_mode){Assert-JsonString $State.config.original_mode 'state config.original_mode' $false;if($State.config.original_mode-notmatch '^[0-7]{3,4}$'){throw 'state config original_mode is invalid'}}
+    foreach($flag in @('previous_model_catalog_json_present','web_search_modified','previous_web_search_present')){Assert-JsonBoolean $State.config.$flag "state config.$flag"}
+    Assert-JsonString $State.cache.original_path 'state cache original path' $false
     $expectedConfig=Join-Path $CodexRoot 'config.toml';$expectedCatalog=Join-Path (Join-Path $CodexRoot 'model-catalogs') "models-$version.standard-responses-compat.json";$expectedCache=Join-Path $CodexRoot 'models_cache.json'
-    Assert-ExpectedPath ([string]$State.config.path) $expectedConfig 'state config path';Assert-SafeOwnedPath $CodexRoot $expectedConfig|Out-Null
-    Assert-ExpectedPath ([string]$State.generated_catalog.path) $expectedCatalog 'state generated catalog path';Assert-SafeOwnedPath $CodexRoot $expectedCatalog|Out-Null
-    Assert-ExpectedPath ([string]$State.cache.original_path) $expectedCache 'state cache path';Assert-SafeOwnedPath $CodexRoot $expectedCache|Out-Null
-    Assert-HashString $State.generated_catalog.sha256 'generated catalog hash';Assert-HashString $State.source_catalog.sha256 'source catalog hash';Assert-HashString $State.config.before_sha256 'config before hash' (-not[bool]$State.config.existed);Assert-HashString $State.cache.sha256 'cache hash' $true
-    if([bool]$State.config.existed){Assert-BackupPath $CodexRoot ([string]$State.config.backup_path) '^config\.toml\.bak-provider-compat-\d{8}-\d{6}(?:\.\d+)?$' 'config backup'}elseif($State.config.backup_path){throw 'state records a config backup although config did not exist'}
-    Assert-BackupPath $CodexRoot ([string]$State.cache.backup_path) '^models_cache\.json\.bak-provider-compat-\d{8}-\d{6}(?:\.\d+)?$' 'cache backup' $true
-    if([bool]$State.config.previous_model_catalog_json_present){Assert-RestoreLiteral ([string]$State.config.previous_model_catalog_json_literal) 'model_catalog_json' ([string]$State.config.previous_model_catalog_json)}elseif($State.config.previous_model_catalog_json_literal){throw 'state contains an unexpected model_catalog_json restore literal'}
-    if([bool]$State.config.previous_web_search_present){Assert-RestoreLiteral ([string]$State.config.previous_web_search_literal) 'web_search' ([string]$State.config.previous_web_search)}elseif($State.config.previous_web_search_literal){throw 'state contains an unexpected web_search restore literal'}
-    if($State.source_catalog.kind -eq 'official-github-tag'){$expectedUrl="https://raw.githubusercontent.com/openai/codex/rust-v$version/codex-rs/models-manager/models.json";if([string]$State.source_catalog.url -ne $expectedUrl){throw 'state official source URL is invalid'}}elseif($State.source_catalog.kind -ne 'local-file'){throw 'state source catalog kind is invalid'}
+    Assert-ExpectedPath $State.config.path $expectedConfig 'state config path';Assert-SafeOwnedPath $CodexRoot $expectedConfig|Out-Null
+    Assert-ExpectedPath $State.generated_catalog.path $expectedCatalog 'state generated catalog path';Assert-SafeOwnedPath $CodexRoot $expectedCatalog|Out-Null
+    Assert-ExpectedPath $State.cache.original_path $expectedCache 'state cache path';Assert-SafeOwnedPath $CodexRoot $expectedCache|Out-Null
+    if($State.config.existed){Assert-JsonString $State.config.backup_path 'state config backup path' $false;Assert-HashString $State.config.before_sha256 'config before hash';Assert-BackupPath $CodexRoot $State.config.backup_path '^config\.toml\.bak-provider-compat-\d{8}-\d{6}(?:\.\d+)?$' 'config backup'}else{Assert-JsonNull $State.config.backup_path 'state config backup path';Assert-JsonNull $State.config.before_sha256 'state config before hash'}
+    if($State.config.previous_model_catalog_json_present){Assert-JsonString $State.config.previous_model_catalog_json 'state previous model_catalog_json';Assert-JsonString $State.config.previous_model_catalog_json_literal 'state previous model_catalog_json literal';Assert-RestoreLiteral $State.config.previous_model_catalog_json_literal 'model_catalog_json' $State.config.previous_model_catalog_json}else{Assert-JsonNull $State.config.previous_model_catalog_json 'state previous model_catalog_json';Assert-JsonNull $State.config.previous_model_catalog_json_literal 'state previous model_catalog_json literal'}
+    if($State.config.previous_web_search_present){Assert-JsonString $State.config.previous_web_search 'state previous web_search';Assert-JsonString $State.config.previous_web_search_literal 'state previous web_search literal';Assert-RestoreLiteral $State.config.previous_web_search_literal 'web_search' $State.config.previous_web_search}else{Assert-JsonNull $State.config.previous_web_search 'state previous web_search';Assert-JsonNull $State.config.previous_web_search_literal 'state previous web_search literal'}
+    if($null-eq$State.cache.backup_path){Assert-JsonNull $State.cache.sha256 'state cache hash'}else{Assert-JsonString $State.cache.backup_path 'state cache backup path' $false;Assert-HashString $State.cache.sha256 'cache hash';Assert-BackupPath $CodexRoot $State.cache.backup_path '^models_cache\.json\.bak-provider-compat-\d{8}-\d{6}(?:\.\d+)?$' 'cache backup'}
 }
 
-function Read-State([string]$CodexRoot){$path=Assert-SafeOwnedPath $CodexRoot (Join-Path $CodexRoot 'provider-compat-state.json');if(-not(Test-Path -LiteralPath $path -PathType Leaf)){return $null};try{$state=[IO.File]::ReadAllText($path,[Text.Encoding]::UTF8)|ConvertFrom-Json}catch{throw "state file is corrupt: $($_.Exception.Message)"};Assert-ValidState $CodexRoot $state;return $state}
+function Read-State([string]$CodexRoot){$path=Assert-SafeOwnedPath $CodexRoot (Join-Path $CodexRoot 'provider-compat-state.json');if(-not(Test-Path -LiteralPath $path -PathType Leaf)){return $null};try{$state=ConvertFrom-CompatJson ([IO.File]::ReadAllText($path,[Text.Encoding]::UTF8))}catch{throw "state file is corrupt: $($_.Exception.Message)"};Assert-ValidState $CodexRoot $state;return $state}
 
 function Get-TransactionPath([string]$CodexRoot){return Assert-SafeOwnedPath $CodexRoot (Join-Path $CodexRoot 'provider-compat-transaction.json')}
 
-function Assert-MapKeys($Map,[string[]]$Expected,[string]$Label){
-    if($Map -is [Collections.IDictionary]){$actual=@($Map.Keys)}else{$actual=@($Map.PSObject.Properties.Name)}
-    $actualText=@($actual|Sort-Object)-join',';$expectedText=@($Expected|Sort-Object)-join','
-    if(-not $actualText.Equals($expectedText,[StringComparison]::Ordinal)){throw "$Label fields do not match transaction schema 1"}
-}
-
 function Assert-ValidTransaction([string]$CodexRoot,$Transaction){
-    if($null -eq $Transaction -or $Transaction.schema_version -ne 1 -or [string]$Transaction.nonce -notmatch '^[0-9a-f]{32}$' -or $Transaction.operation -notin @('apply','rollback')){throw 'transaction journal schema is invalid'}
     Assert-MapKeys $Transaction @('schema_version','operation','phase','nonce','created_at','updated_at','codex_version','root','paths','hashes','flags') 'transaction top level'
-    Assert-ExpectedPath ([string]$Transaction.root) $CodexRoot 'transaction root';Assert-CodexHomeSafe ([string]$Transaction.root)|Out-Null
-    try{[DateTimeOffset]::Parse([string]$Transaction.created_at)|Out-Null;if($Transaction.updated_at){[DateTimeOffset]::Parse([string]$Transaction.updated_at)|Out-Null}}catch{throw 'transaction timestamps are invalid'}
     Assert-MapKeys $Transaction.paths @('config','config_backup','config_snapshot','generated_catalog','generated_catalog_pending','cache_original','cache_backup','state','state_archive') 'transaction paths'
     Assert-MapKeys $Transaction.hashes @('config_before','config_after','generated_catalog','cache','state') 'transaction hashes'
     Assert-MapKeys $Transaction.flags @('config_existed','config_should_delete','generated_catalog_owned','cache_should_restore') 'transaction flags'
-    $nonce=[string]$Transaction.nonce;$paths=$Transaction.paths
-    Assert-ExpectedPath ([string]$paths.config) (Join-Path $CodexRoot 'config.toml') 'transaction config path';Assert-ExpectedPath ([string]$paths.state) (Join-Path $CodexRoot 'provider-compat-state.json') 'transaction state path';Assert-ExpectedPath ([string]$paths.cache_original) (Join-Path $CodexRoot 'models_cache.json') 'transaction cache path'
-    foreach($p in @($paths.config,$paths.state,$paths.cache_original)){Assert-SafeOwnedPath $CodexRoot ([string]$p)|Out-Null}
+    Assert-JsonInteger $Transaction.schema_version 'transaction schema_version';if($Transaction.schema_version-ne1){throw 'transaction schema_version is not supported'}
+    Assert-JsonString $Transaction.operation 'transaction operation' $false;if($Transaction.operation-notin@('apply','rollback')){throw 'transaction operation is invalid'}
+    Assert-JsonString $Transaction.phase 'transaction phase' $false;Assert-JsonString $Transaction.nonce 'transaction nonce' $false;if($Transaction.nonce-notmatch '^[0-9a-f]{32}$'){throw 'transaction nonce is invalid'}
+    Assert-JsonTimestamp $Transaction.created_at 'transaction created_at';if($null-eq$Transaction.updated_at){}else{Assert-JsonTimestamp $Transaction.updated_at 'transaction updated_at'}
+    Assert-JsonString $Transaction.codex_version 'transaction codex_version' $false;if($Transaction.codex_version-notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$'){throw 'transaction Codex version is invalid'}
+    Assert-JsonString $Transaction.root 'transaction root' $false;Assert-ExpectedPath $Transaction.root $CodexRoot 'transaction root';Assert-CodexHomeSafe $Transaction.root|Out-Null
+    $nonce=$Transaction.nonce;$paths=$Transaction.paths;$hashes=$Transaction.hashes;$flags=$Transaction.flags
+    foreach($name in @('config','generated_catalog','cache_original','state')){Assert-JsonString $paths.$name "transaction path $name" $false}
+    foreach($name in @('config_backup','config_snapshot','generated_catalog_pending','cache_backup','state_archive')){if($null-ne$paths.$name){Assert-JsonString $paths.$name "transaction path $name" $false}}
+    foreach($name in @('config_before','config_after','generated_catalog','cache','state')){Assert-HashString $hashes.$name "transaction hash $name" $true}
+    foreach($name in @('config_existed','config_should_delete','generated_catalog_owned','cache_should_restore')){Assert-JsonBoolean $flags.$name "transaction flag $name"}
+    Assert-ExpectedPath $paths.config (Join-Path $CodexRoot 'config.toml') 'transaction config path';Assert-ExpectedPath $paths.state (Join-Path $CodexRoot 'provider-compat-state.json') 'transaction state path';Assert-ExpectedPath $paths.cache_original (Join-Path $CodexRoot 'models_cache.json') 'transaction cache path'
+    foreach($p in @($paths.config,$paths.state,$paths.cache_original)){Assert-SafeOwnedPath $CodexRoot $p|Out-Null}
     if($Transaction.operation -eq 'apply'){
-        $version=[string]$Transaction.codex_version;if($version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$'){throw 'apply transaction version is invalid'};Assert-ExpectedPath ([string]$paths.generated_catalog) (Join-Path (Join-Path $CodexRoot 'model-catalogs') "models-$version.standard-responses-compat.json") 'transaction generated catalog path';Assert-SafeOwnedPath $CodexRoot ([string]$paths.generated_catalog)|Out-Null
-        Assert-BackupPath $CodexRoot ([string]$paths.config_backup) '^config\.toml\.bak-provider-compat-\d{8}-\d{6}(?:\.\d+)?$' 'transaction config backup' (-not[bool]$Transaction.flags.config_existed)
-        Assert-BackupPath $CodexRoot ([string]$paths.cache_backup) '^models_cache\.json\.bak-provider-compat-\d{8}-\d{6}(?:\.\d+)?$' 'transaction cache backup' $true
-        if($paths.config_snapshot -or $paths.generated_catalog_pending -or $paths.state_archive){throw 'apply transaction contains rollback-only paths'}
-        if([bool]$Transaction.flags.config_should_delete -or [bool]$Transaction.flags.generated_catalog_owned -or [bool]$Transaction.flags.cache_should_restore){throw 'apply transaction flags are invalid'}
-        Assert-HashString $Transaction.hashes.config_after 'apply config_after hash';Assert-HashString $Transaction.hashes.generated_catalog 'apply generated catalog hash';Assert-HashString $Transaction.hashes.state 'apply state hash';Assert-HashString $Transaction.hashes.config_before 'apply config_before hash' (-not[bool]$Transaction.flags.config_existed)
+        $version=$Transaction.codex_version;Assert-ExpectedPath $paths.generated_catalog (Join-Path (Join-Path $CodexRoot 'model-catalogs') "models-$version.standard-responses-compat.json") 'transaction generated catalog path';Assert-SafeOwnedPath $CodexRoot $paths.generated_catalog|Out-Null
+        if($flags.config_existed){if($null-eq$paths.config_backup){throw 'apply transaction config backup is missing'};Assert-BackupPath $CodexRoot $paths.config_backup '^config\.toml\.bak-provider-compat-\d{8}-\d{6}(?:\.\d+)?$' 'transaction config backup';Assert-HashString $hashes.config_before 'apply config_before hash'}else{Assert-JsonNull $paths.config_backup 'apply transaction config backup';Assert-JsonNull $hashes.config_before 'apply transaction config_before hash'}
+        if($null-eq$paths.cache_backup){Assert-JsonNull $hashes.cache 'apply transaction cache hash'}else{Assert-BackupPath $CodexRoot $paths.cache_backup '^models_cache\.json\.bak-provider-compat-\d{8}-\d{6}(?:\.\d+)?$' 'transaction cache backup';Assert-HashString $hashes.cache 'apply cache hash'}
+        Assert-JsonNull $paths.config_snapshot 'apply transaction config snapshot';Assert-JsonNull $paths.generated_catalog_pending 'apply transaction pending catalog';Assert-JsonNull $paths.state_archive 'apply transaction state archive'
+        if($flags.config_should_delete -or $flags.generated_catalog_owned -or $flags.cache_should_restore){throw 'apply transaction flags are invalid'}
+        Assert-HashString $hashes.config_after 'apply config_after hash';Assert-HashString $hashes.generated_catalog 'apply generated catalog hash';Assert-HashString $hashes.state 'apply state hash'
         if($Transaction.phase -notin @('prepared','config-backed-up','generated-catalog-written','cache-backed-up','config-written','state-written')){throw 'apply transaction phase is invalid'}
     }else{
-        $version=[string]$Transaction.codex_version
-        if($version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$'){throw 'rollback transaction version is invalid'}
+        $version=$Transaction.codex_version
         $expectedCatalog=Join-Path (Join-Path $CodexRoot 'model-catalogs') "models-$version.standard-responses-compat.json"
-        Assert-ExpectedPath ([string]$paths.generated_catalog) $expectedCatalog 'rollback transaction generated catalog path'
-        Assert-ExpectedPath ([string]$paths.generated_catalog_pending) "$expectedCatalog.rollback-pending-$nonce" 'rollback transaction pending catalog path'
-        Assert-SafeOwnedPath $CodexRoot ([string]$paths.generated_catalog)|Out-Null;Assert-SafeOwnedPath $CodexRoot ([string]$paths.generated_catalog_pending)|Out-Null
-        Assert-ExpectedPath ([string]$paths.config_snapshot) (Join-Path $CodexRoot ".provider-compat-rollback-$nonce.config") 'transaction config snapshot';Assert-SafeOwnedPath $CodexRoot ([string]$paths.config_snapshot)|Out-Null
-        Assert-BackupPath $CodexRoot ([string]$paths.config_backup) '^config\.toml\.bak-provider-compat-\d{8}-\d{6}(?:\.\d+)?$' 'transaction config backup' $true
-        Assert-BackupPath $CodexRoot ([string]$paths.cache_backup) '^models_cache\.json\.bak-provider-compat-\d{8}-\d{6}(?:\.\d+)?$' 'transaction cache backup' $true
-        Assert-BackupPath $CodexRoot ([string]$paths.state_archive) '^provider-compat-state\.json\.rolled-back-\d{8}-\d{6}(?:\.\d+)?$' 'transaction state archive'
-        if(-not[bool]$Transaction.flags.config_existed){throw 'rollback transaction must begin with an existing config'}
-        Assert-HashString $Transaction.hashes.config_before 'rollback config_before hash';Assert-HashString $Transaction.hashes.state 'rollback state hash';Assert-HashString $Transaction.hashes.generated_catalog 'rollback generated catalog hash' (-not[bool]$Transaction.flags.generated_catalog_owned);Assert-HashString $Transaction.hashes.cache 'rollback cache hash' $true
-        if([bool]$Transaction.flags.config_should_delete){if($Transaction.hashes.config_after){throw 'rollback delete transaction must have a null config_after hash'}}else{Assert-HashString $Transaction.hashes.config_after 'rollback config_after hash'}
+        Assert-ExpectedPath $paths.generated_catalog $expectedCatalog 'rollback transaction generated catalog path';Assert-ExpectedPath $paths.generated_catalog_pending "$expectedCatalog.rollback-pending-$nonce" 'rollback transaction pending catalog path'
+        Assert-SafeOwnedPath $CodexRoot $paths.generated_catalog|Out-Null;Assert-SafeOwnedPath $CodexRoot $paths.generated_catalog_pending|Out-Null
+        Assert-ExpectedPath $paths.config_snapshot (Join-Path $CodexRoot ".provider-compat-rollback-$nonce.config") 'transaction config snapshot';Assert-SafeOwnedPath $CodexRoot $paths.config_snapshot|Out-Null
+        Assert-JsonNull $paths.config_backup 'rollback transaction config backup';if($null-ne$paths.cache_backup){Assert-BackupPath $CodexRoot $paths.cache_backup '^models_cache\.json\.bak-provider-compat-\d{8}-\d{6}(?:\.\d+)?$' 'transaction cache backup'};Assert-BackupPath $CodexRoot $paths.state_archive '^provider-compat-state\.json\.rolled-back-\d{8}-\d{6}(?:\.\d+)?$' 'transaction state archive'
+        if(-not$flags.config_existed){throw 'rollback transaction must begin with an existing config'}
+        Assert-HashString $hashes.config_before 'rollback config_before hash';Assert-HashString $hashes.state 'rollback state hash';if($flags.generated_catalog_owned){Assert-HashString $hashes.generated_catalog 'rollback generated catalog hash'}
+        if($null-eq$paths.cache_backup){Assert-JsonNull $hashes.cache 'rollback cache hash'}else{Assert-HashString $hashes.cache 'rollback cache hash'};if($flags.cache_should_restore-and$null-eq$paths.cache_backup){throw 'rollback cache restore flag requires a cache backup'}
+        if($flags.config_should_delete){Assert-JsonNull $hashes.config_after 'rollback config_after hash'}else{Assert-HashString $hashes.config_after 'rollback config_after hash'}
         if($Transaction.phase -notin @('prepared','config-snapshotted','generated-catalog-pending','cache-restored','config-written','state-archived')){throw 'rollback transaction phase is invalid'}
     }
-    if($Transaction.hashes -is [Collections.IDictionary]){$hashNames=@($Transaction.hashes.Keys)}else{$hashNames=@($Transaction.hashes.PSObject.Properties.Name)}
-    foreach($name in $hashNames){Assert-HashString $Transaction.hashes.$name "transaction hash $name" $true}
 }
 
-function Read-Transaction([string]$CodexRoot){$path=Get-TransactionPath $CodexRoot;if(-not(Test-Path -LiteralPath $path -PathType Leaf)){return $null};try{$transaction=[IO.File]::ReadAllText($path,[Text.Encoding]::UTF8)|ConvertFrom-Json}catch{throw "transaction journal is corrupt: $($_.Exception.Message)"};Assert-ValidTransaction $CodexRoot $transaction;return $transaction}
+function Read-Transaction([string]$CodexRoot){$path=Get-TransactionPath $CodexRoot;if(-not(Test-Path -LiteralPath $path -PathType Leaf)){return $null};try{$transaction=ConvertFrom-CompatJson ([IO.File]::ReadAllText($path,[Text.Encoding]::UTF8))}catch{throw "transaction journal is corrupt: $($_.Exception.Message)"};Assert-ValidTransaction $CodexRoot $transaction;return $transaction}
 function Write-Transaction([string]$CodexRoot,$Transaction,[bool]$SuppressFault=$false){Assert-ValidTransaction $CodexRoot $Transaction;Write-AtomicText $CodexRoot (Get-TransactionPath $CodexRoot) (($Transaction|ConvertTo-Json -Depth 12)+"`n") $false ([string]$Transaction.nonce) $SuppressFault}
 function Set-TransactionPhase([string]$CodexRoot,$Transaction,[string]$Phase){$Transaction.phase=$Phase;$Transaction.updated_at=[DateTimeOffset]::Now.ToString('o');Write-Transaction $CodexRoot $Transaction}
 
@@ -893,10 +937,10 @@ function Invoke-Apply($Options,[string]$CodexRoot){
             if($current.Exists -and ((Get-Item -LiteralPath $configPath -Force).Attributes -band [IO.FileAttributes]::ReadOnly)){throw 'config.toml is read-only'}
             if(-not(Test-Path -LiteralPath $catalogDir)){[IO.Directory]::CreateDirectory($catalogDir)|Out-Null};Assert-SafeOwnedPath $CodexRoot $catalogDir|Out-Null;if(Test-Path -LiteralPath $generatedPath){throw "generated catalog already exists without a healthy state file: $generatedPath"}
             $stamp=Get-Date -Format 'yyyyMMdd-HHmmss';$nonce=[string]$lock.Nonce;Assert-OperationNonce $nonce 'operation lock nonce';$configBackup=if($plan.Analysis.Exists){Get-UniquePath(Join-Path $CodexRoot "config.toml.bak-provider-compat-$stamp")}else{$null};$cachePath=Join-Path $CodexRoot 'models_cache.json';Assert-SafeOwnedPath $CodexRoot $cachePath|Out-Null;$cacheExists=Test-Path -LiteralPath $cachePath -PathType Leaf;$cacheBackup=if($cacheExists){Get-UniquePath(Join-Path $CodexRoot "models_cache.json.bak-provider-compat-$stamp")}else{$null};$cacheHash=if($cacheExists){Get-Sha256 $cachePath}else{$null}
-            $previousCatalog=$plan.Analysis.Keys.model_catalog_json;$previousWeb=$plan.Analysis.Keys.web_search
-            $state=[ordered]@{schema_version=1;patch_version=$script:ToolVersion;patch_id=$script:PatchId;codex_version=$version;source_catalog=[ordered]@{kind=$source.Kind;url=$source.Url;path=if($source.Kind-eq'local-file'){$source.Path}else{$null};sha256=$catalog.SourceSha256;model_count=$catalog.ModelCount};generated_catalog=[ordered]@{path=$generatedPath;sha256=(Get-BytesSha256 $catalog.PatchedBytes)};config=[ordered]@{path=$configPath;backup_path=$configBackup;before_sha256=$plan.Analysis.Sha256;existed=$plan.Analysis.Exists;had_bom=$plan.Analysis.Bom;newline=if($plan.Analysis.Newline-eq"`r`n"){'crlf'}else{'lf'};original_mode=$null;previous_model_catalog_json_present=($previousCatalog.Count-eq1);previous_model_catalog_json=if($previousCatalog.Count-eq1){$previousCatalog[0].Value}else{$null};previous_model_catalog_json_literal=if($previousCatalog.Count-eq1){$previousCatalog[0].Raw}else{$null};web_search_modified=[bool]$Options.EnableWebSearch;previous_web_search_present=($previousWeb.Count-eq1);previous_web_search=if($previousWeb.Count-eq1){$previousWeb[0].Value}else{$null};previous_web_search_literal=if($previousWeb.Count-eq1){$previousWeb[0].Raw}else{$null}};cache=[ordered]@{original_path=$cachePath;backup_path=$cacheBackup;sha256=$cacheHash};other_lite_models=@($catalog.OtherLite);applied_at=[DateTimeOffset]::Now.ToString('o')}
+            $previousCatalog=$plan.Analysis.Keys.model_catalog_json;$previousWeb=$plan.Analysis.Keys.web_search;$configBeforeHash=if($plan.Analysis.Exists){$plan.Analysis.Sha256}else{$null}
+            $state=[ordered]@{schema_version=1;patch_version=$script:ToolVersion;patch_id=$script:PatchId;codex_version=$version;source_catalog=[ordered]@{kind=$source.Kind;url=$source.Url;path=if($source.Kind-eq'local-file'){$source.Path}else{$null};sha256=$catalog.SourceSha256;model_count=$catalog.ModelCount};generated_catalog=[ordered]@{path=$generatedPath;sha256=(Get-BytesSha256 $catalog.PatchedBytes)};config=[ordered]@{path=$configPath;backup_path=$configBackup;before_sha256=$configBeforeHash;existed=$plan.Analysis.Exists;had_bom=$plan.Analysis.Bom;newline=if($plan.Analysis.Newline-eq"`r`n"){'crlf'}else{'lf'};original_mode=$null;previous_model_catalog_json_present=($previousCatalog.Count-eq1);previous_model_catalog_json=if($previousCatalog.Count-eq1){$previousCatalog[0].Value}else{$null};previous_model_catalog_json_literal=if($previousCatalog.Count-eq1){$previousCatalog[0].Raw}else{$null};web_search_modified=[bool]$Options.EnableWebSearch;previous_web_search_present=($previousWeb.Count-eq1);previous_web_search=if($previousWeb.Count-eq1){$previousWeb[0].Value}else{$null};previous_web_search_literal=if($previousWeb.Count-eq1){$previousWeb[0].Raw}else{$null}};cache=[ordered]@{original_path=$cachePath;backup_path=$cacheBackup;sha256=$cacheHash};other_lite_models=@($catalog.OtherLite);applied_at=[DateTimeOffset]::Now.ToString('o')}
             $stateText=($state|ConvertTo-Json -Depth 12)+"`n";$stateBytes=ConvertTo-Utf8Bytes $stateText $false
-            $transaction=[ordered]@{schema_version=1;operation='apply';phase='prepared';nonce=$nonce;created_at=[DateTimeOffset]::Now.ToString('o');updated_at=$null;codex_version=$version;root=$CodexRoot;paths=[ordered]@{config=$configPath;config_backup=$configBackup;config_snapshot=$null;generated_catalog=$generatedPath;generated_catalog_pending=$null;cache_original=$cachePath;cache_backup=$cacheBackup;state=(Join-Path $CodexRoot 'provider-compat-state.json');state_archive=$null};hashes=[ordered]@{config_before=$plan.Analysis.Sha256;config_after=(Get-BytesSha256 $plan.AfterBytes);generated_catalog=(Get-BytesSha256 $catalog.PatchedBytes);cache=$cacheHash;state=(Get-BytesSha256 $stateBytes)};flags=[ordered]@{config_existed=$plan.Analysis.Exists;config_should_delete=$false;generated_catalog_owned=$false;cache_should_restore=$false}}
+            $transaction=[ordered]@{schema_version=1;operation='apply';phase='prepared';nonce=$nonce;created_at=[DateTimeOffset]::Now.ToString('o');updated_at=$null;codex_version=$version;root=$CodexRoot;paths=[ordered]@{config=$configPath;config_backup=$configBackup;config_snapshot=$null;generated_catalog=$generatedPath;generated_catalog_pending=$null;cache_original=$cachePath;cache_backup=$cacheBackup;state=(Join-Path $CodexRoot 'provider-compat-state.json');state_archive=$null};hashes=[ordered]@{config_before=$configBeforeHash;config_after=(Get-BytesSha256 $plan.AfterBytes);generated_catalog=(Get-BytesSha256 $catalog.PatchedBytes);cache=$cacheHash;state=(Get-BytesSha256 $stateBytes)};flags=[ordered]@{config_existed=$plan.Analysis.Exists;config_should_delete=$false;generated_catalog_owned=$false;cache_should_restore=$false}}
             Write-Transaction $CodexRoot ([pscustomobject]$transaction);Invoke-TestFault 'apply-prepared'
             if($configBackup){Copy-VerifiedFileWithAcl $CodexRoot $configPath $configBackup $plan.Analysis.Sha256 'config backup'};Set-TransactionPhase $CodexRoot $transaction 'config-backed-up';Invoke-TestFault 'after-backup'
             Write-AtomicBytes $CodexRoot $generatedPath $catalog.PatchedBytes $nonce;Set-TransactionPhase $CodexRoot $transaction 'generated-catalog-written';Invoke-TestFault 'after-catalog'
@@ -939,10 +983,12 @@ function Invoke-Rollback($Options,[string]$CodexRoot){
             $lock=Acquire-Lock $CodexRoot;if(Read-Transaction $CodexRoot){throw 'another transaction appeared while acquiring the lock'};$currentState=Read-State $CodexRoot;if(-not$currentState-or(Get-Sha256 $statePath)-ne$stateHash){throw 'state changed while waiting for the lock'};$current=Get-ConfigAnalysis $configPath
             if($current.Sha256-ne$analysis.Sha256){if($attempt-eq0){Write-Warn 'config.toml changed after confirmation; rebuilding the rollback plan once';$analysis=$current;Assert-NoDuplicateOwnedKeys $analysis;if($analysis.Keys.model_catalog_json.Count-ne1-or-not([string]$analysis.Keys.model_catalog_json[0].Value).Replace('\','/').Equals($generated.Replace('\','/'),[StringComparison]::OrdinalIgnoreCase)){throw 'model_catalog_json drifted during confirmation'};$text=Get-RollbackText $state $analysis;$deleteConfig=(-not[bool]$state.config.existed)-and[string]::IsNullOrWhiteSpace($text);$afterBytes=if($deleteConfig){$null}else{ConvertTo-Utf8Bytes $text ([bool]$state.config.had_bom)};continue};throw 'config.toml changed repeatedly while rolling back'}
             if((Get-Item -LiteralPath $configPath -Force).Attributes -band [IO.FileAttributes]::ReadOnly){throw 'config.toml is read-only'}
-            $nonce=[string]$lock.Nonce;Assert-OperationNonce $nonce 'operation lock nonce';$snapshot=Join-Path $CodexRoot ".provider-compat-rollback-$nonce.config";$pending="$generated.rollback-pending-$nonce";$stamp=Get-Date -Format 'yyyyMMdd-HHmmss';$archive=Get-UniquePath(Join-Path $CodexRoot "provider-compat-state.json.rolled-back-$stamp");$cacheOriginal=[string]$state.cache.original_path;$cacheBackup=[string]$state.cache.backup_path;$catalogHash=if(Test-Path -LiteralPath $generated){Get-Sha256 $generated}else{$null};$catalogShouldMove=$catalogHash-and$catalogHash-eq([string]$state.generated_catalog.sha256).ToUpperInvariant();$cacheShouldRestore=$cacheBackup-and(Test-Path -LiteralPath $cacheBackup)-and-not(Test-Path -LiteralPath $cacheOriginal)-and(Get-Sha256 $cacheBackup)-eq([string]$state.cache.sha256).ToUpperInvariant()
-            $transaction=[ordered]@{schema_version=1;operation='rollback';phase='prepared';nonce=$nonce;created_at=[DateTimeOffset]::Now.ToString('o');updated_at=$null;codex_version=[string]$state.codex_version;root=$CodexRoot;paths=[ordered]@{config=$configPath;config_backup=$null;config_snapshot=$snapshot;generated_catalog=$generated;generated_catalog_pending=$pending;cache_original=$cacheOriginal;cache_backup=$cacheBackup;state=$statePath;state_archive=$archive};hashes=[ordered]@{config_before=$analysis.Sha256;config_after=if($deleteConfig){$null}else{Get-BytesSha256 $afterBytes};generated_catalog=$catalogHash;cache=[string]$state.cache.sha256;state=$stateHash};flags=[ordered]@{config_existed=$true;config_should_delete=$deleteConfig;generated_catalog_owned=[bool]$catalogShouldMove;cache_should_restore=[bool]$cacheShouldRestore}}
+            $nonce=[string]$lock.Nonce;Assert-OperationNonce $nonce 'operation lock nonce';$snapshot=Join-Path $CodexRoot ".provider-compat-rollback-$nonce.config";$pending="$generated.rollback-pending-$nonce";$stamp=Get-Date -Format 'yyyyMMdd-HHmmss';$archive=Get-UniquePath(Join-Path $CodexRoot "provider-compat-state.json.rolled-back-$stamp");$cacheOriginal=$state.cache.original_path;$cacheBackup=$state.cache.backup_path;$catalogHash=if(Test-Path -LiteralPath $generated){Get-Sha256 $generated}else{$null};$catalogShouldMove=$false
+            if($catalogHash-and$catalogHash-eq([string]$state.generated_catalog.sha256).ToUpperInvariant()){try{$ownershipCatalog=Read-CatalogFile $generated;$catalogShouldMove=[bool]$ownershipCatalog.AllTargetsAlreadyFalse}catch{$catalogShouldMove=$false}}
+            $cacheShouldRestore=$cacheBackup-and(Test-Path -LiteralPath $cacheBackup)-and-not(Test-Path -LiteralPath $cacheOriginal)-and(Get-Sha256 $cacheBackup)-eq([string]$state.cache.sha256).ToUpperInvariant()
+            $transaction=[ordered]@{schema_version=1;operation='rollback';phase='prepared';nonce=$nonce;created_at=[DateTimeOffset]::Now.ToString('o');updated_at=$null;codex_version=$state.codex_version;root=$CodexRoot;paths=[ordered]@{config=$configPath;config_backup=$null;config_snapshot=$snapshot;generated_catalog=$generated;generated_catalog_pending=$pending;cache_original=$cacheOriginal;cache_backup=$cacheBackup;state=$statePath;state_archive=$archive};hashes=[ordered]@{config_before=$analysis.Sha256;config_after=if($deleteConfig){$null}else{Get-BytesSha256 $afterBytes};generated_catalog=$catalogHash;cache=$state.cache.sha256;state=$stateHash};flags=[ordered]@{config_existed=$true;config_should_delete=$deleteConfig;generated_catalog_owned=[bool]$catalogShouldMove;cache_should_restore=[bool]$cacheShouldRestore}}
             Write-Transaction $CodexRoot ([pscustomobject]$transaction);Invoke-TestFault 'rollback-prepared';Copy-VerifiedFileWithAcl $CodexRoot $configPath $snapshot $analysis.Sha256 'rollback config snapshot';Set-TransactionPhase $CodexRoot $transaction 'config-snapshotted';Invoke-TestFault 'rollback-after-snapshot'
-            if($catalogShouldMove){[IO.File]::Move($generated,$pending)}elseif(Test-Path -LiteralPath $generated){Write-Warn 'generated catalog hash drifted; preserved it'};Set-TransactionPhase $CodexRoot $transaction 'generated-catalog-pending';Invoke-TestFault 'rollback-after-catalog'
+            if($catalogShouldMove){[IO.File]::Move($generated,$pending)}elseif(Test-Path -LiteralPath $generated){Write-Warn 'generated catalog is drifted or invalid; preserved it'};Set-TransactionPhase $CodexRoot $transaction 'generated-catalog-pending';Invoke-TestFault 'rollback-after-catalog'
             if($cacheShouldRestore){[IO.File]::Move($cacheBackup,$cacheOriginal)}elseif($cacheBackup-and(Test-Path -LiteralPath $cacheBackup)){if(Test-Path -LiteralPath $cacheOriginal){Write-Warn 'a new models_cache.json exists; preserved both cache files'}else{Write-Warn 'cache backup hash drifted; preserved it'}};Set-TransactionPhase $CodexRoot $transaction 'cache-restored';Invoke-TestFault 'rollback-after-cache'
             if((Get-Sha256 $configPath)-ne$analysis.Sha256){throw 'config.toml changed immediately before the rollback write'}
             Invoke-TestFault 'rollback-config-write'

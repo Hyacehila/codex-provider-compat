@@ -370,10 +370,12 @@ fixture or mock pass as a universal provider compatibility guarantee.
 ## Upstream status
 
 Upstream facts are a dated checkpoint, not a promise about future `main`.
-Checked at July 11, 2026 15:20:49 UTC (23:20:49 Asia/Shanghai): the latest
-release was `rust-v0.144.1` (published July 9), and the checked main commit was
-`54b8f112a3815ead40ebcd50f9c2f2fc786e26fb`. Both still contained the three
-Lite flags and the relevant Lite request behavior. At that checkpoint, the
+Checked at July 11, 2026 18:00:29 UTC (July 12, 2026 02:00:29
+Asia/Shanghai): the latest release was `rust-v0.144.1` (published July 9), and
+the checked main commit was `385c0a9351e2199929e01f7864ec78a8f7d5e580`
+(committed July 11 at 17:47:17 UTC). Both still contained the three Lite flags
+and the relevant Lite request behavior. The checked main catalog contained 8
+models; only the three patch targets were Lite. At that checkpoint, the
 directly related issues were open:
 
 - [#31894](https://github.com/openai/codex/issues/31894)

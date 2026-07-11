@@ -92,16 +92,17 @@ jobs:
             if ([Array]::IndexOf($bytes, [byte]0x0D) -ge 0) { throw "$path must use LF without CR bytes" }
           }
 
-          $nativePreferenceExists = Test-Path variable:PSNativeCommandUseErrorActionPreference
-          if ($nativePreferenceExists) { $previousNativePreference = $PSNativeCommandUseErrorActionPreference; $PSNativeCommandUseErrorActionPreference = $false }
-          try {
-            $trailing = & git grep -n -I -E '[[:blank:]]+$' -- .
-            $grepExit = $LASTEXITCODE
-          } finally {
-            if ($nativePreferenceExists) { $PSNativeCommandUseErrorActionPreference = $previousNativePreference }
+          $trackedFiles = @(& git ls-files)
+          if ($LASTEXITCODE -ne 0) { throw "git ls-files failed with exit code $LASTEXITCODE" }
+          $trailing = [Collections.Generic.List[string]]::new()
+          foreach ($path in $trackedFiles) {
+            $lineNumber = 0
+            foreach ($line in [IO.File]::ReadLines((Resolve-Path -LiteralPath $path))) {
+              $lineNumber++
+              if ($line -match '[ \t]+$') { $trailing.Add(('{0}:{1}' -f $path, $lineNumber)) }
+            }
           }
-          if ($grepExit -eq 0) { throw "trailing whitespace found:`n$($trailing -join "`n")" }
-          if ($grepExit -gt 1) { throw "git grep failed with exit code $grepExit" }
+          if ($trailing.Count -gt 0) { throw "trailing whitespace found:`n$($trailing -join "`n")" }
 
           # Audit production scripts only. The request-shape test intentionally owns a localhost TcpListener.
           $production = (Get-Content ./codex-provider-compat.ps1 -Raw) + "`n" + (Get-Content ./codex-provider-compat.sh -Raw)

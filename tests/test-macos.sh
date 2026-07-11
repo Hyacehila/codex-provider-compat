@@ -139,6 +139,22 @@ function run(a) {
 JXA
 }
 
+json_set_boolean() {
+  file=$1
+  dotted=$2
+  value=$3
+  /usr/bin/osascript -l JavaScript - "$file" "$dotted" "$value" <<'JXA'
+ObjC.import('Foundation');
+function run(a) {
+  if (a[2] !== 'true' && a[2] !== 'false') throw Error('invalid boolean');
+  let e=Ref(),s=$.NSString.stringWithContentsOfFileEncodingError($(a[0]),$.NSUTF8StringEncoding,e),o=JSON.parse(s.js),p=a[1].split('.'),x=o;
+  for (let i=0;i<p.length-1;i++) x=x[p[i]];
+  x[p[p.length-1]]=a[2] === 'true';
+  if (!$(JSON.stringify(o,null,2)+'\n').writeToFileAtomicallyEncodingError($(a[0]),true,$.NSUTF8StringEncoding,e)) throw Error('write');
+}
+JXA
+}
+
 json_get_value() {
   /usr/bin/osascript -l JavaScript - "$1" "$2" <<'JXA'
 ObjC.import('Foundation');
@@ -545,6 +561,24 @@ t_home_path_guards() {
   assert_eq 3 "$RUN_CODE" canonical-home-symlink-equality
 }
 
+t_system_alias_normalization() {
+  fn="$SUITE_ROOT/absolute-path-function.sh"
+  /usr/bin/awk '
+    /^absolute_path\(\) \{/ { copying=1 }
+    copying && /^new_nonce\(\) \{/ { exit }
+    copying { print }
+  ' "$TOOL" > "$fn" || return 1
+  . "$fn" || return 1
+  assert_eq '/private/var/cpc-alias-probe' "$(absolute_path '/var/cpc-alias-probe')" var-alias || return 1
+  assert_eq '/private/tmp/cpc-alias-probe' "$(absolute_path '/tmp/cpc-alias-probe')" tmp-alias || return 1
+  assert_eq '/private/etc/cpc-alias-probe' "$(absolute_path '/etc/cpc-alias-probe')" etc-alias || return 1
+  new_home alias-user-link
+  outside="$SUITE_ROOT/alias-user-target"
+  /bin/mkdir "$outside" || return 1
+  /bin/ln -s "$outside" "$NEW_HOME/user-link" || return 1
+  if absolute_path "$NEW_HOME/user-link/child" >/dev/null 2>&1; then return 1; fi
+}
+
 t_state_and_transaction_tamper() {
   new_home tamper
   h=$NEW_HOME
@@ -554,6 +588,23 @@ t_state_and_transaction_tamper() {
   json_set_string "$h/provider-compat-state.json" config.backup_path "$SUITE_ROOT/outside-backup"
   rollback_default "$h"
   assert_eq 3 "$RUN_CODE" backup-path || return 1
+  new_home empty-state-fields
+  h=$NEW_HOME
+  /bin/cp "$FIXTURES/config-basic.toml" "$h/config.toml"
+  printf cache > "$h/models_cache.json"
+  apply_default "$h"
+  assert_eq 0 "$RUN_CODE" empty-state-fields-setup || return 1
+  for field in config.backup_path config.before_sha256 config.previous_web_search_literal cache.backup_path cache.sha256 other_lite_models.0; do
+    original_value=$(json_get_value "$h/provider-compat-state.json" "$field") || return 1
+    [ -n "$original_value" ] || return 1
+    json_set_string "$h/provider-compat-state.json" "$field" '' || return 1
+    rollback_default "$h"
+    assert_eq 3 "$RUN_CODE" "empty-$field" || return 1
+    assert_file "$h/provider-compat-state.json" || return 1
+    json_set_string "$h/provider-compat-state.json" "$field" "$original_value" || return 1
+  done
+  run_tool status --codex-home "$h" --codex-version 0.144.1
+  assert_eq 0 "$RUN_CODE" empty-state-fields-restored || return 1
   new_home nested-config-backup
   h=$NEW_HOME
   /bin/cp "$FIXTURES/config-basic.toml" "$h/config.toml"
@@ -591,6 +642,26 @@ t_state_and_transaction_tamper() {
   assert_contains "$RUN_OUT" 'recovery-required' || return 1
   apply_default "$h"
   assert_eq 3 "$RUN_CODE" tx-apply || return 1
+  assert_file "$h/provider-compat-transaction.json" || return 1
+  new_home transaction-cache-pair
+  h=$NEW_HOME
+  /bin/cp "$FIXTURES/config-basic.toml" "$h/config.toml"
+  run_tool_env CODEX_PROVIDER_COMPAT_TEST_CRASH_STAGE after-journal apply --yes --codex-home "$h" --codex-version 0.144.1 --catalog-file "$FIXTURES/models-valid.json"
+  assert_eq 137 "$RUN_CODE" transaction-cache-pair-crash || return 1
+  json_set_string "$h/provider-compat-transaction.json" hashes.cache AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+  apply_default "$h"
+  assert_eq 3 "$RUN_CODE" transaction-cache-pair || return 1
+  assert_file "$h/provider-compat-transaction.json" || return 1
+  new_home transaction-cache-restore-flag
+  h=$NEW_HOME
+  /bin/cp "$FIXTURES/config-basic.toml" "$h/config.toml"
+  apply_default "$h"
+  assert_eq 0 "$RUN_CODE" transaction-cache-restore-flag-setup || return 1
+  run_tool_env CODEX_PROVIDER_COMPAT_TEST_CRASH_STAGE rollback-after-journal rollback --yes --codex-home "$h"
+  assert_eq 137 "$RUN_CODE" transaction-cache-restore-flag-crash || return 1
+  json_set_boolean "$h/provider-compat-transaction.json" flags.cache_should_restore true
+  rollback_default "$h"
+  assert_eq 3 "$RUN_CODE" transaction-cache-restore-flag || return 1
   assert_file "$h/provider-compat-transaction.json" || return 1
   new_home nested-state-archive
   h=$NEW_HOME
@@ -914,6 +985,8 @@ JXA
   assert_eq 0 "$RUN_CODE" semantic-rollback || return 1
   [ "$(hash_file "$generated")" = "$drift_hash" ] || return 1
   assert_not_contains "$h/config.toml" 'standard-responses-compat' || return 1
+  assert_no_path "$h/provider-compat-state.json" || return 1
+  assert_no_path "$h/provider-compat-transaction.json" || return 1
   new_home stale
   h=$NEW_HOME
   /bin/cp "$FIXTURES/config-basic.toml" "$h/config.toml"
@@ -1017,6 +1090,7 @@ case_run bom-crlf-permissions t_bom_crlf_permissions
 case_run missing-empty-config t_missing_and_empty_config
 case_run symlink-guards t_symlink_guards
 case_run home-path-guards t_home_path_guards
+case_run system-alias-normalization t_system_alias_normalization
 case_run state-transaction-tamper t_state_and_transaction_tamper
 case_run apply-fault-recovery t_apply_fault_recovery
 case_run rollback-fault-recovery t_rollback_fault_recovery

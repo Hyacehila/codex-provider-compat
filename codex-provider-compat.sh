@@ -36,22 +36,39 @@ function symlinkDestination(p) {
   let d = $.NSFileManager.defaultManager.destinationOfSymbolicLinkAtPathError($(p), e);
   return d ? d.js : null;
 }
+function normalizeAppleSystemAliasPath(p, alias, target) {
+  if (!alias) return p;
+  if (p !== alias && !p.startsWith(alias + '/')) throw Error('system alias prefix mismatch');
+  return target + p.slice(alias.length);
+}
 function run(a) {
   if (!a.length || !a[0]) throw Error('empty path');
   let mode = a[1] || 'strict';
   if (mode !== 'strict' && mode !== 'resolve') throw Error('invalid path mode');
   let lexical = $(a[0]).stringByExpandingTildeInPath.stringByStandardizingPath.js;
   if (!lexical.startsWith('/') || /[\u0000\r\n]/.test(lexical)) throw Error('invalid absolute path');
-  let parts = lexical.split('/'), cur = '';
+  let parts = lexical.split('/'), cur = '', verifiedAlias = null, verifiedTarget = null;
   for (let i = 1; i < parts.length; i++) {
     if (!parts[i]) continue;
     cur += '/' + parts[i];
     let destination = symlinkDestination(cur);
     if (!destination) continue;
-    let allowedSystemAlias = cur === '/var' || cur === '/tmp' || cur === '/etc';
-    if (!allowedSystemAlias && mode !== 'resolve') throw Error('symlink path component: ' + cur);
+    let systemTarget =
+      cur === '/var' ? '/private/var' :
+      cur === '/tmp' ? '/private/tmp' :
+      cur === '/etc' ? '/private/etc' : null;
+    if (systemTarget) {
+      if (destination !== systemTarget && destination !== systemTarget.slice(1)) {
+        throw Error('unexpected system alias target: ' + cur);
+      }
+      verifiedAlias = cur;
+      verifiedTarget = systemTarget;
+      continue;
+    }
+    if (mode !== 'resolve') throw Error('symlink path component: ' + cur);
   }
-  return $(lexical).stringByResolvingSymlinksInPath.stringByStandardizingPath.js;
+  let canonical = normalizeAppleSystemAliasPath(lexical, verifiedAlias, verifiedTarget);
+  return $(canonical).stringByResolvingSymlinksInPath.stringByStandardizingPath.js;
 }
 JXA
 }
@@ -324,7 +341,7 @@ discover_versions() {
   : > "$out"
   if [ -n "${CODEX_PROVIDER_COMPAT_TEST_VERSIONS:-}" ]; then
     printf '%s\n' "$CODEX_PROVIDER_COMPAT_TEST_VERSIONS" |
-      /usr/bin/awk -F ';' '{for(i=1;i<=NF;i++){n=split($i,a,"=");if(n>=1)printf "%s\\t<test-fixture>\\t%s\\n",a[1],a[2]}}' > "$out"
+      /usr/bin/awk -F ';' '{for(i=1;i<=NF;i++){n=split($i,a,"=");if(n>=1)printf "%s\t<test-fixture:%s>\t%s\n",a[1],a[1],a[2]}}' > "$out"
     return
   fi
   cli=$(command -v codex 2>/dev/null || true)
@@ -838,11 +855,10 @@ function exact(o, keys, name) {
 }
 function std(p) { return $(p).stringByStandardizingPath.js; }
 function inside(root, p) { return typeof p === 'string' && std(p) === p && p !== root && p.startsWith(root + '/') && !/[\u0000\r\n]/.test(p); }
-function hash(s, nullable) { return nullable && (s === null || s === '') || typeof s === 'string' && /^[0-9A-Fa-f]{64}$/.test(s); }
+function hash(s, nullable) { return nullable && s === null || typeof s === 'string' && /^[0-9A-Fa-f]{64}$/.test(s); }
 function leaf(p) { return p.slice(p.lastIndexOf('/') + 1); }
 function parent(p) { let i = p.lastIndexOf('/'); return i <= 0 ? '/' : p.slice(0, i); }
 function safeLiteral(lit, value) {
-  if (lit === null || lit === undefined || lit === '') return true;
   req(typeof lit === 'string' && lit.length >= 2, 'invalid previous literal');
   let q = lit[0];
   req((q === '"' || q === "'") && lit[lit.length - 1] === q && lit.indexOf('\n') < 0 && lit.indexOf('\r') < 0, 'invalid previous literal');
@@ -880,7 +896,7 @@ function run(a) {
   exact(o.config, ['path','backup_path','before_sha256','existed','had_bom','newline','original_mode','previous_model_catalog_json_present','previous_model_catalog_json','previous_model_catalog_json_literal','web_search_modified','previous_web_search_present','previous_web_search','previous_web_search_literal'], 'config state');
   exact(o.cache, ['original_path','backup_path','sha256'], 'cache state');
   req(typeof o.patch_version === 'string' && /^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/.test(o.patch_version), 'invalid patch version');
-  req(typeof o.applied_at === 'string' && !isNaN(Date.parse(o.applied_at)) && Array.isArray(o.other_lite_models) && o.other_lite_models.every(function(x){return typeof x === 'string';}), 'invalid state metadata');
+  req(typeof o.applied_at === 'string' && !isNaN(Date.parse(o.applied_at)) && Array.isArray(o.other_lite_models) && o.other_lite_models.every(function(x){return typeof x === 'string' && x.length > 0;}), 'invalid state metadata');
   req(o.source_catalog.kind === 'local-file' || o.source_catalog.kind === 'official-github-tag', 'invalid source catalog kind');
   if (o.source_catalog.kind === 'official-github-tag') {
     req(o.source_catalog.path === null && o.source_catalog.url === 'https://raw.githubusercontent.com/openai/codex/rust-v' + o.codex_version + '/codex-rs/models-manager/models.json', 'invalid official source catalog');
@@ -893,10 +909,13 @@ function run(a) {
   req(typeof o.config.existed === 'boolean' && typeof o.config.previous_model_catalog_json_present === 'boolean' && typeof o.config.web_search_modified === 'boolean' && typeof o.config.previous_web_search_present === 'boolean', 'invalid config state flags');
   req(typeof o.config.had_bom === 'boolean' && (o.config.newline === 'lf' || o.config.newline === 'crlf'), 'invalid config format state');
   req(o.config.original_mode === null || o.config.original_mode === undefined || typeof o.config.original_mode === 'string' && /^[0-7]{3,4}$/.test(o.config.original_mode), 'invalid original config mode');
-  req(hash(o.config.before_sha256, true), 'invalid config backup hash');
-  if (o.config.backup_path !== null && o.config.backup_path !== '') {
+  if (o.config.existed) {
+    req(hash(o.config.before_sha256, false), 'invalid config backup hash');
+    req(typeof o.config.backup_path === 'string', 'missing config backup path');
     req(inside(root, o.config.backup_path) && parent(o.config.backup_path) === root && /^config\.toml\.bak-provider-compat-[0-9]{8}-[0-9]{6}(\.[0-9]+)?$/.test(leaf(o.config.backup_path)), 'invalid config backup path');
-  } else req(!o.config.existed, 'missing config backup path');
+  } else {
+    req(o.config.backup_path === null && o.config.before_sha256 === null, 'unexpected config backup state');
+  }
   if (o.config.previous_model_catalog_json_present) {
     req(typeof o.config.previous_model_catalog_json === 'string', 'invalid previous catalog value');
     req(safeLiteral(o.config.previous_model_catalog_json_literal, o.config.previous_model_catalog_json), 'invalid previous catalog literal');
@@ -906,10 +925,11 @@ function run(a) {
     req(safeLiteral(o.config.previous_web_search_literal, o.config.previous_web_search), 'invalid previous web_search literal');
   } else req(o.config.previous_web_search === null && o.config.previous_web_search_literal === null, 'unexpected previous web_search state');
   req(o.cache && o.cache.original_path === root + '/models_cache.json' && hash(o.cache.sha256, true), 'invalid cache state');
-  if (o.cache.backup_path !== null && o.cache.backup_path !== '') {
+  if (o.cache.backup_path !== null) {
+    req(typeof o.cache.backup_path === 'string', 'invalid cache backup path');
     req(inside(root, o.cache.backup_path) && parent(o.cache.backup_path) === root && /^models_cache\.json\.bak-provider-compat-[0-9]{8}-[0-9]{6}(\.[0-9]+)?$/.test(leaf(o.cache.backup_path)), 'invalid cache backup path');
     req(hash(o.cache.sha256, false), 'missing cache hash');
-  } else req(o.cache.sha256 === null || o.cache.sha256 === '', 'unexpected cache hash');
+  } else req(o.cache.sha256 === null, 'unexpected cache hash');
   return JSON.stringify(o);
 }
 JXA
@@ -1098,6 +1118,8 @@ function run(a) {
     else req(h.config_after !== null, 'missing rollback config hash');
   }
   if (p.cache_backup !== null) req(h.cache !== null, 'missing transaction cache hash');
+  else req(h.cache === null, 'unexpected transaction cache hash');
+  if (f.cache_should_restore) req(o.operation === 'rollback' && p.cache_backup !== null, 'cache restore flag requires a cache backup');
   if (o.operation === 'rollback') req(h.config_before !== null, 'missing rollback config hash');
   return JSON.stringify(o);
 }
@@ -1886,7 +1908,13 @@ rollback_cmd() {
   transaction_config_after=$config_after
   [ "$delete_config" -eq 1 ] && transaction_config_after=
   generated_owned=0
-  [ "$generated_before_actual" != '<missing>' ] && [ "$generated_before_actual" = "$expected_generated_hash" ] && generated_owned=1
+  if [ "$generated_before_actual" != '<missing>' ] && [ "$generated_before_actual" = "$expected_generated_hash" ]; then
+    rollback_catalog_meta=$(jxa_catalog validate "$generated" 2>/dev/null || true)
+    if [ -n "$rollback_catalog_meta" ]; then
+      printf '%s' "$rollback_catalog_meta" > "$TMP_ROOT/rollback-catalog-meta.json"
+      [ "$(jxa_get "$TMP_ROOT/rollback-catalog-meta.json" all_false)" = true ] && generated_owned=1
+    fi
+  fi
   cache_restorable=0
   [ -n "$cache_backup" ] && [ -f "$cache_backup" ] && [ ! -L "$cache_backup" ] && [ ! -e "$cache" ] && [ ! -L "$cache" ] && [ "$(sha256 "$cache_backup")" = "$cache_hash" ] && cache_restorable=1
   [ "$(config_fingerprint "$config")" = "$config_before" ] && [ "$(sha256 "$state")" = "$state_hash" ] || { warn 'rollback inputs changed before transaction start'; return $EX_UNSAFE; }
@@ -1906,7 +1934,7 @@ rollback_cmd() {
     /bin/mv -n "$generated" "$pending" || { recover_transaction; return $EX_UNSAFE; }
     [ ! -e "$generated" ] && [ -f "$pending" ] && [ "$(sha256 "$pending")" = "$expected_generated_hash" ] || { recover_transaction; return $EX_UNSAFE; }
   elif [ -e "$generated" ] || [ -L "$generated" ]; then
-    warn 'generated catalog hash drifted; preserving it'
+    warn 'generated catalog is drifted or invalid; preserving it'
   fi
   set_transaction_phase generated-catalog-pending || { recover_transaction; return $EX_UNSAFE; }
   maybe_fail rollback-after-catalog || { recover_transaction; return $EX_UNSAFE; }

@@ -179,7 +179,7 @@ Test-Case 'web search update and rollback preserve exact user comment' {
 }
 
 Test-Case 'missing config is removed on rollback while an originally empty config stays empty' {
-    $missing=New-TestHome 'config-missing';Assert-Equal 0 (Invoke-Tool (Apply-Args $missing)).ExitCode 'missing apply';Assert-True (Test-Path -LiteralPath (Join-Path $missing 'config.toml')) 'config not created';Assert-Equal 0 (Invoke-Tool (Rollback-Args $missing)).ExitCode 'missing rollback';Assert-False (Test-Path -LiteralPath (Join-Path $missing 'config.toml')) 'originally missing config was left behind'
+    $missing=New-TestHome 'config-missing';Assert-Equal 0 (Invoke-Tool (Apply-Args $missing)).ExitCode 'missing apply';Assert-True (Test-Path -LiteralPath (Join-Path $missing 'config.toml')) 'config not created';$missingState=Read-StateJson $missing;Assert-Equal $null $missingState.cache.backup_path 'cache backup must remain JSON null when no cache existed';Assert-Equal $null $missingState.cache.sha256 'cache hash must remain JSON null when no cache existed';Assert-Equal 0 (Invoke-Tool (Rollback-Args $missing)).ExitCode 'missing rollback';Assert-False (Test-Path -LiteralPath (Join-Path $missing 'config.toml')) 'originally missing config was left behind'
     $empty=New-TestHome 'config-empty';[IO.File]::WriteAllBytes((Join-Path $empty 'config.toml'),[byte[]]@());Assert-Equal 0 (Invoke-Tool (Apply-Args $empty)).ExitCode 'empty apply';Assert-Equal 0 (Invoke-Tool (Rollback-Args $empty)).ExitCode 'empty rollback';Assert-True (Test-Path -LiteralPath (Join-Path $empty 'config.toml')) 'original empty config removed';Assert-Equal 0 (Get-Item -LiteralPath (Join-Path $empty 'config.toml')).Length 'empty config not restored byte-for-byte'
 }
 
@@ -306,6 +306,45 @@ Test-Case 'canonical-equivalent backup and archive paths are rejected literally'
     $txHome=New-TestHome 'canonical-tx';Copy-Fixture 'config-basic.toml' (Join-Path $txHome 'config.toml');Assert-Equal 0 (Invoke-Tool (Apply-Args $txHome)).ExitCode 'transaction baseline apply';$stateHash=(Get-FileHash (Join-Path $txHome 'provider-compat-state.json')).Hash;$crash=Invoke-Tool (Rollback-Args $txHome) @{CODEX_PROVIDER_COMPAT_TEST_CRASH_STAGE='rollback-after-snapshot'};Assert-Equal 91 $crash.ExitCode 'rollback did not crash after snapshot';$transactionPath=Join-Path $txHome 'provider-compat-transaction.json';$transaction=[IO.File]::ReadAllText($transactionPath,[Text.Encoding]::UTF8)|ConvertFrom-Json;$transaction.paths.state_archive=([string]$transaction.paths.state_archive).Replace('\','/');Write-Json $transactionPath $transaction;$retry=Invoke-Tool (Rollback-Args $txHome);Assert-Equal 3 $retry.ExitCode $retry.Output;Assert-Equal $stateHash (Get-FileHash (Join-Path $txHome 'provider-compat-state.json')).Hash 'state changed after canonical-equivalent transaction tamper'
 }
 
+Test-Case 'state schema type and field tampering fails closed with zero writes' {
+    $cases=@(
+        [pscustomobject]@{Name='string-bool';Mutate={param($o)$o.config.existed='false'}},
+        [pscustomobject]@{Name='string-schema';Mutate={param($o)$o.schema_version='1'}},
+        [pscustomobject]@{Name='numeric-version';Mutate={param($o)$o.patch_version=1}},
+        [pscustomobject]@{Name='string-count';Mutate={param($o)$o.source_catalog.model_count='9'}},
+        [pscustomobject]@{Name='missing-field';Mutate={param($o)$o.PSObject.Properties.Remove('applied_at')}},
+        [pscustomobject]@{Name='extra-field';Mutate={param($o)$o|Add-Member -NotePropertyName unexpected -NotePropertyValue $true}},
+        [pscustomobject]@{Name='wrong-null-object';Mutate={param($o)$o.source_catalog.url=[pscustomobject]@{unexpected=$true}}},
+        [pscustomobject]@{Name='wrong-nested-object';Mutate={param($o)$o.config='not-an-object'}},
+        [pscustomobject]@{Name='wrong-array-type';Mutate={param($o)$o.other_lite_models='future-lite-model'}}
+    )
+    foreach($case in $cases){
+        $CodexRoot=New-TestHome ("state-schema-"+$case.Name);Copy-Fixture 'config-basic.toml' (Join-Path $CodexRoot 'config.toml');Assert-Equal 0 (Invoke-Tool (Apply-Args $CodexRoot)).ExitCode "$($case.Name) baseline apply"
+        $statePath=Join-Path $CodexRoot 'provider-compat-state.json';$state=Read-StateJson $CodexRoot;& ([scriptblock]$case.Mutate) $state;Write-Json $statePath $state;$before=Snapshot-TestRoot $CodexRoot
+        $status=Invoke-Tool (Status-Args $CodexRoot);Assert-Equal 3 $status.ExitCode "$($case.Name) status: $($status.Output)";Assert-Equal $before (Snapshot-TestRoot $CodexRoot) "$($case.Name) status changed files"
+        $rollback=Invoke-Tool (Rollback-Args $CodexRoot);Assert-Equal 3 $rollback.ExitCode "$($case.Name) rollback: $($rollback.Output)";Assert-Equal $before (Snapshot-TestRoot $CodexRoot) "$($case.Name) rollback changed files"
+    }
+}
+
+Test-Case 'transaction schema type and field tampering blocks recovery before writes' {
+    $cases=@(
+        [pscustomobject]@{Name='string-bool';Mutate={param($o)$o.flags.config_existed='false'}},
+        [pscustomobject]@{Name='string-schema';Mutate={param($o)$o.schema_version='1'}},
+        [pscustomobject]@{Name='numeric-operation';Mutate={param($o)$o.operation=1}},
+        [pscustomobject]@{Name='missing-field';Mutate={param($o)$o.hashes.PSObject.Properties.Remove('cache')}},
+        [pscustomobject]@{Name='extra-field';Mutate={param($o)$o|Add-Member -NotePropertyName unexpected -NotePropertyValue $true}},
+        [pscustomobject]@{Name='null-object';Mutate={param($o)$o.paths.config_snapshot=[pscustomobject]@{unexpected=$true}}},
+        [pscustomobject]@{Name='wrong-nested-object';Mutate={param($o)$o.paths='not-an-object'}},
+        [pscustomobject]@{Name='wrong-timestamp';Mutate={param($o)$o.updated_at=[pscustomobject]@{unexpected=$true}}}
+    )
+    foreach($case in $cases){
+        $CodexRoot=New-TestHome ("tx-schema-"+$case.Name);Copy-Fixture 'config-basic.toml' (Join-Path $CodexRoot 'config.toml');$crash=Invoke-Tool (Apply-Args $CodexRoot) @{CODEX_PROVIDER_COMPAT_TEST_CRASH_STAGE='apply-prepared'};Assert-Equal 91 $crash.ExitCode "$($case.Name) transaction setup"
+        $transactionPath=Join-Path $CodexRoot 'provider-compat-transaction.json';$transaction=[IO.File]::ReadAllText($transactionPath,[Text.Encoding]::UTF8)|ConvertFrom-Json;& ([scriptblock]$case.Mutate) $transaction;Write-Json $transactionPath $transaction;$before=Snapshot-TestRoot $CodexRoot
+        $apply=Invoke-Tool (Apply-Args $CodexRoot);Assert-Equal 3 $apply.ExitCode "$($case.Name) apply recovery: $($apply.Output)";Assert-Equal $before (Snapshot-TestRoot $CodexRoot) "$($case.Name) apply recovery changed files"
+        $rollback=Invoke-Tool (Rollback-Args $CodexRoot);Assert-Equal 3 $rollback.ExitCode "$($case.Name) rollback recovery: $($rollback.Output)";Assert-Equal $before (Snapshot-TestRoot $CodexRoot) "$($case.Name) rollback recovery changed files"
+    }
+}
+
 Test-Case 'tampered rollback journal cannot redirect pending catalog within home' {
     $CodexRoot=New-TestHome 'journal-tamper';Copy-Fixture 'config-basic.toml' (Join-Path $CodexRoot 'config.toml');Assert-Equal 0 (Invoke-Tool (Apply-Args $CodexRoot)).ExitCode 'apply';$crash=Invoke-Tool (Rollback-Args $CodexRoot) @{CODEX_PROVIDER_COMPAT_TEST_CRASH_STAGE='rollback-after-snapshot'};Assert-Equal 91 $crash.ExitCode 'rollback crash';$innocent=Join-Path $CodexRoot 'innocent.json';Write-Utf8 $innocent 'keep';$hash=(Get-FileHash $innocent).Hash;$transaction=[IO.File]::ReadAllText((Join-Path $CodexRoot 'provider-compat-transaction.json'),[Text.Encoding]::UTF8)|ConvertFrom-Json;$transaction.paths.generated_catalog_pending=$innocent;Write-Json (Join-Path $CodexRoot 'provider-compat-transaction.json') $transaction;$r=Invoke-Tool (Rollback-Args $CodexRoot);Assert-Equal 3 $r.ExitCode $r.Output;Assert-Equal $hash (Get-FileHash $innocent).Hash 'tampered journal touched innocent file'
 }
@@ -322,7 +361,7 @@ Test-Case 'active lock blocks; stale owned lock is reclaimed' {
 Test-Case 'status detects version, config, semantic catalog, and backup drift' {
     $staleHome=New-TestHome 'status-version';Copy-Fixture 'config-basic.toml' (Join-Path $staleHome 'config.toml');Assert-Equal 0 (Invoke-Tool (Apply-Args $staleHome)).ExitCode 'apply';Assert-Equal 4 (Invoke-Tool @('status','--codex-home',$staleHome,'--codex-version','0.145.0')).ExitCode 'version stale';Assert-Equal 3 (Invoke-Tool @('status','--codex-home',$staleHome) @{CODEX_PROVIDER_COMPAT_TEST_VERSIONS='cli='}).ExitCode 'undetectable current version should be unknown'
     $configHome=New-TestHome 'status-config';Copy-Fixture 'config-basic.toml' (Join-Path $configHome 'config.toml');Assert-Equal 0 (Invoke-Tool (Apply-Args $configHome)).ExitCode 'apply';$config=Join-Path $configHome 'config.toml';$text=[IO.File]::ReadAllText($config,[Text.Encoding]::UTF8).Replace('standard-responses-compat.json','drift.json');Write-Utf8 $config $text;Assert-Equal 3 (Invoke-Tool (Status-Args $configHome)).ExitCode 'config drift'
-    $catalogHome=New-TestHome 'status-semantic';Copy-Fixture 'config-basic.toml' (Join-Path $catalogHome 'config.toml');Assert-Equal 0 (Invoke-Tool (Apply-Args $catalogHome)).ExitCode 'apply';$state=Read-StateJson $catalogHome;$catalog=[IO.File]::ReadAllText($state.generated_catalog.path,[Text.Encoding]::UTF8)|ConvertFrom-Json;($catalog.models|Where-Object slug -eq 'gpt-5.6-sol').use_responses_lite=$true;Write-Json $state.generated_catalog.path $catalog;$state.generated_catalog.sha256=(Get-FileHash $state.generated_catalog.path).Hash;Write-Json (Join-Path $catalogHome 'provider-compat-state.json') $state;Assert-Equal 3 (Invoke-Tool (Status-Args $catalogHome)).ExitCode 'semantic catalog drift bypassed hash check'
+    $catalogHome=New-TestHome 'status-semantic';Copy-Fixture 'config-basic.toml' (Join-Path $catalogHome 'config.toml');Assert-Equal 0 (Invoke-Tool (Apply-Args $catalogHome)).ExitCode 'apply';$state=Read-StateJson $catalogHome;$catalog=[IO.File]::ReadAllText($state.generated_catalog.path,[Text.Encoding]::UTF8)|ConvertFrom-Json;($catalog.models|Where-Object slug -eq 'gpt-5.6-sol').use_responses_lite=$true;Write-Json $state.generated_catalog.path $catalog;$state.generated_catalog.sha256=(Get-FileHash $state.generated_catalog.path).Hash;Write-Json (Join-Path $catalogHome 'provider-compat-state.json') $state;$driftedCatalogHash=(Get-FileHash $state.generated_catalog.path).Hash;Assert-Equal 3 (Invoke-Tool (Status-Args $catalogHome)).ExitCode 'semantic catalog drift bypassed hash check';$semanticRollback=Invoke-Tool (Rollback-Args $catalogHome);Assert-Equal 0 $semanticRollback.ExitCode $semanticRollback.Output;Assert-True (Test-Path -LiteralPath $state.generated_catalog.path) 'rollback deleted a semantically drifted catalog';Assert-Equal $driftedCatalogHash (Get-FileHash $state.generated_catalog.path).Hash 'rollback changed a semantically drifted catalog'
     $backupHome=New-TestHome 'status-backup';Copy-Fixture 'config-basic.toml' (Join-Path $backupHome 'config.toml');Assert-Equal 0 (Invoke-Tool (Apply-Args $backupHome)).ExitCode 'apply';$state=Read-StateJson $backupHome;Remove-Item -LiteralPath $state.config.backup_path;Assert-Equal 3 (Invoke-Tool (Status-Args $backupHome)).ExitCode 'missing config backup not detected'
 }
 
