@@ -263,7 +263,7 @@ rollback 不会覆盖 apply 后由用户改动过的 owned key。只有生成 ca
 
 ## 上游状态
 
-这里记录的是带时间的上游复核快照，不是对未来 `main` 的承诺。截至 2026-07-11 18:00:29 UTC（Asia/Shanghai 2026-07-12 02:00:29），最新正式 release 是 `rust-v0.144.1`（7 月 9 日发布），复核的 main commit 是 `385c0a9351e2199929e01f7864ec78a8f7d5e580`（提交时间为 2026-07-11 17:47:17 UTC）。两者当时仍保留三个 Lite 标记和相关 Lite 请求行为；复核的 main catalog 包含 8 个模型，只有三个补丁目标是 Lite。以下直接相关 Issue 当时均为 open：
+这里记录的是带时间的上游复核快照，不是对未来 `main` 的承诺。截至 2026-07-11 21:22:20 UTC（Asia/Shanghai 2026-07-12 05:22:20），最新正式 release 是 `rust-v0.144.1`（7 月 9 日发布），复核的 main commit 是 `9e552e9d15ba52bed7077d5357f3e18e330f8f38`（提交时间为 2026-07-11 21:03:12 UTC）。两者当时仍保留三个 Lite 标记和相关 Lite 请求行为；复核的 main catalog 包含 8 个模型，只有三个补丁目标是 Lite。以下直接相关 Issue 当时均为 open：
 
 - [#31894](https://github.com/openai/codex/issues/31894)
 - [#31875](https://github.com/openai/codex/issues/31875)

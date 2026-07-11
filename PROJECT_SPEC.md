@@ -164,9 +164,9 @@ OpenAI Codex 仓库的 Issue `#31894` 描述了 Responses Lite 在自定义 prov
 
 ### 3.8 2026-07-12 上游复核快照
 
-以下事实检查于 2026-07-11 18:00:29 UTC（Asia/Shanghai 2026-07-12 02:00:29）。这是带时间的上游快照，不是对未来 `main` 的永久声明；未来交付或更新前仍必须再次刷新：
+以下事实检查于 2026-07-11 21:22:20 UTC（Asia/Shanghai 2026-07-12 05:22:20）。这是带时间的上游快照，不是对未来 `main` 的永久声明；未来交付或更新前仍必须再次刷新：
 
-- 当时最新正式 release 为 `rust-v0.144.1`（2026-07-09 发布）；检查的 main 提交为 `385c0a9351e2199929e01f7864ec78a8f7d5e580`（提交时间为 2026-07-11 17:47:17 UTC）。
+- 当时最新正式 release 为 `rust-v0.144.1`（2026-07-09 发布）；检查的 main 提交为 `9e552e9d15ba52bed7077d5357f3e18e330f8f38`（提交时间为 2026-07-11 21:03:12 UTC）。
 - `rust-v0.144.1` 的官方完整 `models.json` 为 297884 字节、SHA-256 `DCAB00231A5178A9C84B7AEF4CC06A1E1359E37EE0DD7E69D5822C4B1DE723B1`，包含 8 个模型。完整目录的生产校验因此不能使用“约 20 个模型”之类的旧数量假设；当前补丁要求至少 8 个模型且至少 5 个非目标模型，防止把只含目标模型的手写目录误当作完整 catalog。
 - release 与所检查 main 都仍把 `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna` 标为 Lite，且没有其他 Lite 模型。
 - release 与 main 的请求构造仍在 Lite 下发送 `input[0].type = additional_tools`、省略顶层 `tools` 和顶层 `instructions`、强制 `parallel_tool_calls = false`、使用 `reasoning.context = all_turns`、移除图片 `detail`，并发送内部 Lite header。hosted Responses 工具仍在 Lite 规划阶段被整体跳过。

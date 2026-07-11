@@ -23,6 +23,7 @@ TMP_BASE=${TMPDIR:-/tmp}
 TMP_ROOT=$(/usr/bin/mktemp -d "$TMP_BASE/codex-provider-compat.XXXXXX") || exit 1
 LOCK_DIR=
 LOCK_NONCE=
+LOCK_SIGNAL_CODE=0
 TX_PATH=
 SIGNALLED=0
 RECOVERY_PRESERVE_CONFIG=0
@@ -179,6 +180,7 @@ atomic_install() {
   dest=$2
   preserve=${3:-}
   token=${4:-${LOCK_NONCE:-$$}}
+  atomic_test_stage=${5:-}
   path_guard "$CODEX_ROOT" "$dest" inside >/dev/null || return 1
   dir=${dest%/*}
   base=${dest##*/}
@@ -194,6 +196,7 @@ atomic_install() {
   fi
   sync_file "$tmp" >/dev/null 2>&1 || { /bin/rm -f "$tmp"; return 1; }
   [ "$(sha256 "$tmp")" = "$(sha256 "$src")" ] || { /bin/rm -f "$tmp"; return 1; }
+  if [ -n "$atomic_test_stage" ]; then maybe_fail "$atomic_test_stage" || { /bin/rm -f "$tmp"; return 1; }; fi
   /bin/mv -f "$tmp" "$dest" || { /bin/rm -f "$tmp"; return 1; }
   [ "$(sha256 "$dest")" = "$(sha256 "$src")" ] || return 1
 }
@@ -227,7 +230,7 @@ remove_exact_atomic_temp() {
 cleanup_transaction_atomic_temps() {
   tx=$1
   nonce=$(jxa_get "$tx" nonce) || return 1
-  for key in config generated state; do
+  for key in config config_backup config_snapshot generated_catalog state; do
     dest=$(jxa_get "$tx" "paths.$key")
     [ -z "$dest" ] || remove_exact_atomic_temp "$(atomic_temp_path "$dest" "$nonce")" || return 1
   done
@@ -341,41 +344,41 @@ ensure_catalog_dir() {
 }
 
 version_from() {
-  label=$1
-  path=$2
-  [ -x "$path" ] || return 0
-  out=$("$path" --version 2>&1) || out=
-  version=$(printf '%s\n' "$out" | /usr/bin/awk 'match($0,/[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?/){print substr($0,RSTART,RLENGTH);exit}')
-  if [ -n "$version" ]; then
-    printf '%s\t%s\t%s\n' "$label" "$path" "$version"
+  vf_label=$1
+  vf_path=$2
+  [ -x "$vf_path" ] || return 0
+  vf_output=$("$vf_path" --version 2>&1) || vf_output=
+  vf_version=$(printf '%s\n' "$vf_output" | /usr/bin/awk 'match($0,/[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?/){print substr($0,RSTART,RLENGTH);exit}')
+  if [ -n "$vf_version" ]; then
+    printf '%s\t%s\t%s\n' "$vf_label" "$vf_path" "$vf_version"
   else
-    printf '%s\t%s\t\n' "$label" "$path"
+    printf '%s\t%s\t\n' "$vf_label" "$vf_path"
   fi
 }
 
 discover_versions() {
-  out="$TMP_ROOT/versions"
-  : > "$out"
+  dv_versions_file="$TMP_ROOT/versions"
+  : > "$dv_versions_file"
   if [ -n "${CODEX_PROVIDER_COMPAT_TEST_VERSIONS:-}" ]; then
     printf '%s\n' "$CODEX_PROVIDER_COMPAT_TEST_VERSIONS" |
-      /usr/bin/awk -F ';' '{for(i=1;i<=NF;i++){n=split($i,a,"=");if(n>=1)printf "%s\t<test-fixture:%s>\t%s\n",a[1],a[1],a[2]}}' > "$out"
+      /usr/bin/awk -F ';' '{for(i=1;i<=NF;i++){n=split($i,a,"=");if(n>=1)printf "%s\t<test-fixture:%s>\t%s\n",a[1],a[1],a[2]}}' > "$dv_versions_file"
     return
   fi
-  cli=$(command -v codex 2>/dev/null || true)
-  [ -n "$cli" ] && version_from 'PATH CLI' "$cli" >> "$out"
+  dv_cli=$(command -v codex 2>/dev/null || true)
+  [ -n "$dv_cli" ] && version_from 'PATH CLI' "$dv_cli" >> "$dv_versions_file"
   /bin/ps -axo comm= 2>/dev/null |
-    while IFS= read -r running; do
-      case "$running" in
+    while IFS= read -r dv_running; do
+      case "$dv_running" in
         codex|codex-app-server|*/codex|*/codex-app-server|*/codex-cli)
-          version_from 'Running Codex/app-server' "$running"
+          version_from 'Running Codex/app-server' "$dv_running"
           ;;
       esac
-    done >> "$out"
-  version_from 'Codex home app-server' "$CODEX_ROOT/plugins/.plugin-appserver/codex" >> "$out"
-  version_from 'Desktop /Applications' '/Applications/Codex.app/Contents/Resources/codex' >> "$out"
-  [ -z "${HOME:-}" ] || version_from 'Desktop ~/Applications' "$HOME/Applications/Codex.app/Contents/Resources/codex" >> "$out"
-  /usr/bin/awk -F '\t' '!seen[$2]++' "$out" > "$out.d"
-  /bin/mv "$out.d" "$out"
+    done >> "$dv_versions_file"
+  version_from 'Codex home app-server' "$CODEX_ROOT/plugins/.plugin-appserver/codex" >> "$dv_versions_file"
+  version_from 'Desktop /Applications' '/Applications/Codex.app/Contents/Resources/codex' >> "$dv_versions_file"
+  [ -z "${HOME:-}" ] || version_from 'Desktop ~/Applications' "$HOME/Applications/Codex.app/Contents/Resources/codex" >> "$dv_versions_file"
+  /usr/bin/awk -F '\t' '!seen[$2]++' "$dv_versions_file" > "$dv_versions_file.d"
+  /bin/mv "$dv_versions_file.d" "$dv_versions_file"
 }
 
 show_versions() {
@@ -1225,11 +1228,38 @@ release_lock() {
   LOCK_NONCE=
 }
 
+try_create_lock_dir() {
+  lcd_candidate=$1
+  lcd_nonce=$2
+  LOCK_SIGNAL_CODE=0
+  trap 'LOCK_SIGNAL_CODE=129' HUP
+  trap 'LOCK_SIGNAL_CODE=130' INT
+  trap 'LOCK_SIGNAL_CODE=143' TERM
+  lcd_hook_failed=0
+  if /bin/mkdir "$lcd_candidate" 2>/dev/null; then
+    lcd_result=0
+    LOCK_DIR=$lcd_candidate
+    LOCK_NONCE=$lcd_nonce
+    [ "$(filemode "$lcd_candidate" 2>/dev/null || true)" = 700 ] || lcd_hook_failed=1
+  else
+    lcd_result=$?
+  fi
+  if [ "$lcd_result" -eq 0 ] && [ "$lcd_hook_failed" -eq 0 ]; then maybe_fail lock-mkdir-critical || lcd_hook_failed=1; fi
+  trap 'on_signal 129' HUP
+  trap 'on_signal 130' INT
+  trap 'on_signal 143' TERM
+  lcd_signal=$LOCK_SIGNAL_CODE
+  LOCK_SIGNAL_CODE=0
+  [ "$lcd_signal" -eq 0 ] || on_signal "$lcd_signal"
+  if [ "$lcd_hook_failed" -ne 0 ]; then release_lock; return 1; fi
+  return "$lcd_result"
+}
+
 acquire_lock() {
   candidate="$CODEX_ROOT/provider-compat.lock.d"
   path_guard "$CODEX_ROOT" "$candidate" inside >/dev/null || return 1
   new_lock_nonce=$(new_nonce) || return 1
-  if /bin/mkdir -m 700 "$candidate" 2>/dev/null; then
+  if try_create_lock_dir "$candidate" "$new_lock_nonce"; then
     :
   else
     [ -d "$candidate" ] && [ ! -L "$candidate" ] || return 1
@@ -1272,10 +1302,9 @@ acquire_lock() {
       /bin/rm -f "$lock" || return 1
       /bin/rmdir "$candidate" 2>/dev/null || return 1
     fi
-    /bin/mkdir -m 700 "$candidate" || return 1
+    try_create_lock_dir "$candidate" "$new_lock_nonce" || return 1
   fi
-  LOCK_DIR=$candidate
-  LOCK_NONCE=$new_lock_nonce
+  maybe_fail after-lock-mkdir || { release_lock; return 1; }
   lock_tmp="$LOCK_DIR/.lock.json.$LOCK_NONCE.tmp"
   lock_metadata_write "$lock_tmp" || return 1
   /bin/mv "$lock_tmp" "$LOCK_DIR/lock.json" || return 1
@@ -1327,7 +1356,7 @@ write_transaction() {
   prepared="$TMP_ROOT/transaction.new"
   jxa_write_transaction "$prepared" "$@" || return 1
   jxa_validate_transaction "$prepared" "$CODEX_ROOT" >/dev/null || return 1
-  atomic_install "$prepared" "$TX_PATH" "${TX_PRESERVE:-}" "$LOCK_NONCE" || return 1
+  atomic_install "$prepared" "$TX_PATH" '' "$LOCK_NONCE" || return 1
   validate_transaction_to_temp
 }
 
@@ -1580,7 +1609,7 @@ recover_rollback_transaction() {
   fi
 }
 
-recover_transaction() {
+recover_transaction() (
   transaction_exists || return 0
   validate_transaction_to_temp || { warn 'transaction journal is corrupt or unsafe'; return 1; }
   for k in config config_backup config_snapshot generated_catalog generated_catalog_pending cache_original cache_backup state state_archive; do
@@ -1594,7 +1623,7 @@ recover_transaction() {
     rollback) recover_rollback_transaction ;;
     *) return 1 ;;
   esac
-}
+)
 
 recover_transaction_preserving_config() {
   RECOVERY_PRESERVE_CONFIG=1
@@ -1788,8 +1817,23 @@ apply_cmd() {
   if [ "$DRY_RUN" -eq 1 ]; then info 'result=dry-run (zero writes)'; return 0; fi
   confirm_write 'Apply responses-lite-standard-tools?' || return $EX_ERROR
   ensure_home || return $EX_UNSAFE
+  if [ "${CODEX_PROVIDER_COMPAT_TEST_TOCTOU:-}" = transaction ]; then
+    case "$CATALOG_FILE" in /*) ;; *) return $EX_UNSAFE ;; esac
+    /usr/bin/env CODEX_PROVIDER_COMPAT_TEST_TOCTOU= CODEX_PROVIDER_COMPAT_TEST_CRASH_STAGE=after-catalog /bin/sh "$0" apply --yes --codex-home "$CODEX_ROOT" --codex-version 0.143.0 --catalog-file "$CATALOG_FILE" > "$TMP_ROOT/injected-transaction.log" 2>&1
+    [ "$?" -eq 137 ] || return $EX_UNSAFE
+  fi
   [ -n "$LOCK_DIR" ] || acquire_lock || return $EX_UNSAFE
   recover_transaction || return $EX_UNSAFE
+  if [ -e "$CODEX_ROOT/provider-compat-state.json" ] || [ -L "$CODEX_ROOT/provider-compat-state.json" ]; then
+    state_health_core "$SELECTED_VERSION"
+    rc=$?
+    [ "$rc" -eq 0 ] && { info 'result=already-applied'; return 0; }
+    [ "$rc" -eq 4 ] && { warn 'a concurrent patch belongs to a different Codex version; rollback it before applying this version'; return $EX_STALE; }
+    warn 'concurrent patch state is not healthy; rollback first'
+    return $EX_UNSAFE
+  fi
+  generated="$CODEX_ROOT/model-catalogs/models-$SELECTED_VERSION.standard-responses-compat.json"
+  path_guard "$CODEX_ROOT" "$generated" inside >/dev/null || return $EX_UNSAFE
   current_hash=$(config_fingerprint "$CODEX_ROOT/config.toml")
   if [ "${CODEX_PROVIDER_COMPAT_TEST_TOCTOU:-}" = once ] || [ "${CODEX_PROVIDER_COMPAT_TEST_TOCTOU:-}" = twice ]; then
     printf '%s\n' '# concurrent test edit 1' >> "$CODEX_ROOT/config.toml"
@@ -1842,7 +1886,7 @@ apply_cmd() {
   write_transaction apply prepared "$LOCK_NONCE" "$CODEX_ROOT" "$SELECTED_VERSION" "$config" "$backup" '' "$generated" '' "$cache" "$cache_backup" "$state" '' "$before_sha" "$PREPARED_AFTER_HASH" "$generated_sha" "$cache_hash" "$state_sha" "$([ "$existed" = true ] && printf 1 || printf 0)" 0 0 0 || return $EX_UNSAFE
   maybe_fail after-journal || { recover_transaction; return $EX_UNSAFE; }
   if [ "$existed" = true ]; then
-    /bin/cp -p "$config" "$backup" || { recover_transaction; return $EX_UNSAFE; }
+    atomic_install "$config" "$backup" "$config" "$LOCK_NONCE" config-backup-copy || { recover_transaction; return $EX_UNSAFE; }
     [ "$(sha256 "$backup")" = "$before_sha" ] || { recover_transaction; return $EX_UNSAFE; }
   fi
   set_transaction_phase config-backed-up || { recover_transaction; return $EX_UNSAFE; }
@@ -1956,7 +2000,7 @@ rollback_cmd() {
   fi
   write_transaction rollback prepared "$LOCK_NONCE" "$CODEX_ROOT" "$(jxa_get "$TMP_ROOT/state-safe.json" codex_version)" "$config" '' "$snapshot" "$generated" "$pending" "$cache" "$cache_backup" "$state" "$archive" "$config_before" "$transaction_config_after" "$transaction_generated_hash" "$cache_hash" "$state_hash" 1 "$delete_config" "$generated_owned" "$cache_restorable" || return $EX_UNSAFE
   maybe_fail rollback-after-journal || { recover_transaction; return $EX_UNSAFE; }
-  /bin/cp -p "$config" "$snapshot" || { recover_transaction; return $EX_UNSAFE; }
+  atomic_install "$config" "$snapshot" "$config" "$LOCK_NONCE" rollback-snapshot-copy || { recover_transaction; return $EX_UNSAFE; }
   [ "$(sha256 "$snapshot")" = "$config_before" ] || { recover_transaction; return $EX_UNSAFE; }
   set_transaction_phase config-snapshotted || { recover_transaction; return $EX_UNSAFE; }
   maybe_fail rollback-after-config-save || { recover_transaction; return $EX_UNSAFE; }

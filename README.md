@@ -370,10 +370,10 @@ fixture or mock pass as a universal provider compatibility guarantee.
 ## Upstream status
 
 Upstream facts are a dated checkpoint, not a promise about future `main`.
-Checked at July 11, 2026 18:00:29 UTC (July 12, 2026 02:00:29
+Checked at July 11, 2026 21:22:20 UTC (July 12, 2026 05:22:20
 Asia/Shanghai): the latest release was `rust-v0.144.1` (published July 9), and
-the checked main commit was `385c0a9351e2199929e01f7864ec78a8f7d5e580`
-(committed July 11 at 17:47:17 UTC). Both still contained the three Lite flags
+the checked main commit was `9e552e9d15ba52bed7077d5357f3e18e330f8f38`
+(committed July 11 at 21:03:12 UTC). Both still contained the three Lite flags
 and the relevant Lite request behavior. The checked main catalog contained 8
 models; only the three patch targets were Lite. At that checkpoint, the
 directly related issues were open:

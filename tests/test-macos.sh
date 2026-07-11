@@ -841,11 +841,53 @@ t_signal_and_crash_recovery() {
   assert_contains "$RUN_OUT" 'recovery-required' || return 1
   apply_default "$h"
   assert_eq 0 "$RUN_CODE" recovered-apply || return 1
-  ! find "$h" -name '*.provider-compat-*.tmp' -type f | /usr/bin/grep . >/dev/null || return 1
+  assert_no_atomic_temps "$h" || return 1
   run_tool status --codex-home "$h" --codex-version 0.144.1
   assert_eq 0 "$RUN_CODE" recovered-status || return 1
   rollback_default "$h"
-  assert_eq 0 "$RUN_CODE" recovered-rollback
+  assert_eq 0 "$RUN_CODE" recovered-rollback || return 1
+  new_home crash-config-backup
+  h=$NEW_HOME
+  /bin/cp "$FIXTURES/config-basic.toml" "$h/config.toml"
+  /usr/bin/env CODEX_PROVIDER_COMPAT_TEST_CRASH_STAGE=config-backup-copy /bin/sh "$TOOL" apply --yes --codex-home "$h" --codex-version 0.144.1 --catalog-file "$FIXTURES/models-valid.json" > "$RUN_OUT" 2>&1
+  RUN_CODE=$?
+  assert_eq 137 "$RUN_CODE" config-backup-crash || return 1
+  assert_file "$h/provider-compat-transaction.json" || return 1
+  [ "$(json_get_value "$h/provider-compat-transaction.json" phase)" = prepared ] || return 1
+  nonce=$(json_get_value "$h/provider-compat-transaction.json" nonce)
+  config_backup=$(json_get_value "$h/provider-compat-transaction.json" paths.config_backup)
+  assert_no_path "$config_backup" || return 1
+  backup_dir=${config_backup%/*}
+  backup_base=${config_backup##*/}
+  backup_tmp="$backup_dir/.$backup_base.provider-compat-$nonce.tmp"
+  assert_file "$backup_tmp" || return 1
+  printf partial > "$backup_tmp"
+  apply_default "$h"
+  assert_eq 0 "$RUN_CODE" config-backup-recovered-apply || return 1
+  assert_no_atomic_temps "$h" || return 1
+  rollback_default "$h"
+  assert_eq 0 "$RUN_CODE" config-backup-recovered-rollback || return 1
+  new_home crash-rollback-snapshot
+  h=$NEW_HOME
+  /bin/cp "$FIXTURES/config-basic.toml" "$h/config.toml"
+  apply_default "$h"
+  assert_eq 0 "$RUN_CODE" snapshot-setup || return 1
+  /usr/bin/env CODEX_PROVIDER_COMPAT_TEST_CRASH_STAGE=rollback-snapshot-copy /bin/sh "$TOOL" rollback --yes --codex-home "$h" > "$RUN_OUT" 2>&1
+  RUN_CODE=$?
+  assert_eq 137 "$RUN_CODE" snapshot-crash || return 1
+  assert_file "$h/provider-compat-transaction.json" || return 1
+  [ "$(json_get_value "$h/provider-compat-transaction.json" phase)" = prepared ] || return 1
+  nonce=$(json_get_value "$h/provider-compat-transaction.json" nonce)
+  snapshot=$(json_get_value "$h/provider-compat-transaction.json" paths.config_snapshot)
+  assert_no_path "$snapshot" || return 1
+  snapshot_dir=${snapshot%/*}
+  snapshot_base=${snapshot##*/}
+  snapshot_tmp="$snapshot_dir/.$snapshot_base.provider-compat-$nonce.tmp"
+  assert_file "$snapshot_tmp" || return 1
+  printf partial > "$snapshot_tmp"
+  rollback_default "$h"
+  assert_eq 0 "$RUN_CODE" snapshot-recovered-rollback || return 1
+  assert_no_atomic_temps "$h"
 }
 
 t_crash_cache_conflict() {
@@ -874,6 +916,21 @@ t_toctou() {
   assert_contains "$h/config.toml" '# concurrent test edit 1' || return 1
   rollback_default "$h"
   assert_eq 0 "$RUN_CODE" once-rollback || return 1
+  new_home toctou-transaction
+  h=$NEW_HOME
+  /bin/cp "$FIXTURES/config-basic.toml" "$h/config.toml"
+  run_tool_env CODEX_PROVIDER_COMPAT_TEST_TOCTOU transaction apply --yes --codex-home "$h" --codex-version 0.144.1 --catalog-file "$FIXTURES/models-valid.json"
+  assert_eq 0 "$RUN_CODE" transaction || return 1
+  assert_contains "$RUN_OUT" 'recovery=restored-pre-apply-state' || return 1
+  assert_file "$h/model-catalogs/models-0.144.1.standard-responses-compat.json" || return 1
+  assert_no_path "$h/model-catalogs/models-0.143.0.standard-responses-compat.json" || return 1
+  assert_no_path "$h/provider-compat-transaction.json" || return 1
+  assert_no_path "$h/provider-compat.lock.d" || return 1
+  assert_no_atomic_temps "$h" || return 1
+  run_tool status --codex-home "$h" --codex-version 0.144.1
+  assert_eq 0 "$RUN_CODE" transaction-status || return 1
+  rollback_default "$h"
+  assert_eq 0 "$RUN_CODE" transaction-rollback || return 1
   new_home toctou-twice
   h=$NEW_HOME
   /bin/cp "$FIXTURES/config-basic.toml" "$h/config.toml"
@@ -924,6 +981,19 @@ t_late_transaction_config_race() {
 }
 
 t_locks() {
+  new_home lock-signal
+  h=$NEW_HOME
+  /bin/cp "$FIXTURES/config-basic.toml" "$h/config.toml"
+  original=$(hash_file "$h/config.toml")
+  run_tool_env CODEX_PROVIDER_COMPAT_TEST_SIGNAL_STAGE lock-mkdir-critical apply --yes --codex-home "$h" --codex-version 0.144.1 --catalog-file "$FIXTURES/models-valid.json"
+  assert_eq 143 "$RUN_CODE" signal-in-lock-critical-section || return 1
+  [ "$(hash_file "$h/config.toml")" = "$original" ] || return 1
+  assert_no_path "$h/provider-compat.lock.d" || return 1
+  assert_no_path "$h/provider-compat-transaction.json" || return 1
+  apply_default "$h"
+  assert_eq 0 "$RUN_CODE" signal-retry || return 1
+  rollback_default "$h"
+  assert_eq 0 "$RUN_CODE" signal-retry-rollback || return 1
   new_home lock
   h=$NEW_HOME
   /bin/cp "$FIXTURES/config-basic.toml" "$h/config.toml"
@@ -986,7 +1056,17 @@ t_cache_conflict_and_drift() {
   /bin/cp "$FIXTURES/config-basic.toml" "$h/config.toml"
   apply_default "$h"
   assert_eq 0 "$RUN_CODE" drift-setup || return 1
-  printf '\nmodel_catalog_json = "/user/change"\n' >> "$h/config.toml"
+  /usr/bin/osascript -l JavaScript - "$h/config.toml" <<'JXA' || return 1
+ObjC.import('Foundation');
+function run(a) {
+  let e = Ref(), s = $.NSString.stringWithContentsOfFileEncodingError($(a[0]), $.NSUTF8StringEncoding, e);
+  if (!s) throw Error('read');
+  let text = s.js, matches = text.match(/^model_catalog_json[ \t]*=.*$/gm) || [];
+  if (matches.length !== 1) throw Error('expected one top-level catalog key');
+  text = text.replace(/^model_catalog_json[ \t]*=.*$/m, 'model_catalog_json = "/user/change"');
+  if (!$(text).writeToFileAtomicallyEncodingError($(a[0]), true, $.NSUTF8StringEncoding, e)) throw Error('write');
+}
+JXA
   run_tool status --codex-home "$h" --codex-version 0.144.1
   assert_eq 3 "$RUN_CODE" drift-status
 }
@@ -1067,6 +1147,37 @@ t_state_backup_health() {
 }
 
 t_version_and_network() {
+  new_home actual-version-conflict
+  h=$NEW_HOME
+  /bin/mkdir -p "$h/bin" "$h/plugins/.plugin-appserver" "$h/run-cwd"
+  printf '#!/bin/sh\nprintf "codex-cli 0.144.1\\n"\n' > "$h/bin/codex"
+  printf '#!/bin/sh\nprintf "codex-app-server 0.143.0\\n"\n' > "$h/plugins/.plugin-appserver/codex"
+  /bin/chmod 700 "$h/bin/codex" "$h/plugins/.plugin-appserver/codex"
+  (
+    cd "$h/run-cwd" || exit 1
+    /usr/bin/env PATH="$h/bin:$PATH" /bin/sh "$TOOL" apply --yes --codex-home "$h" --catalog-file "$FIXTURES/models-valid.json"
+  ) > "$RUN_OUT" 2>&1
+  RUN_CODE=$?
+  assert_eq 3 "$RUN_CODE" actual-conflict || return 1
+  assert_contains "$RUN_OUT" 'version source: PATH CLI -> 0.144.1' || return 1
+  assert_contains "$RUN_OUT" 'version source: Codex home app-server -> 0.143.0' || return 1
+  [ "$(find "$h/run-cwd" -type f | /usr/bin/wc -l | tr -d ' ')" = 0 ] || return 1
+  new_home actual-cli-only
+  h=$NEW_HOME
+  /bin/cp "$FIXTURES/config-basic.toml" "$h/config.toml"
+  /bin/mkdir "$h/bin" "$h/run-cwd"
+  printf '#!/bin/sh\nprintf "codex-cli 0.144.1\\n"\n' > "$h/bin/codex"
+  /bin/chmod 700 "$h/bin/codex"
+  (
+    cd "$h/run-cwd" || exit 1
+    /usr/bin/env PATH="$h/bin:$PATH" /bin/sh "$TOOL" apply --yes --codex-home "$h" --catalog-file "$FIXTURES/models-valid.json"
+  ) > "$RUN_OUT" 2>&1
+  RUN_CODE=$?
+  assert_eq 0 "$RUN_CODE" actual-cli-only || return 1
+  assert_contains "$RUN_OUT" 'version source: PATH CLI -> 0.144.1' || return 1
+  [ "$(find "$h/run-cwd" -type f | /usr/bin/wc -l | tr -d ' ')" = 0 ] || return 1
+  rollback_default "$h"
+  assert_eq 0 "$RUN_CODE" actual-cli-rollback || return 1
   new_home versions
   h=$NEW_HOME
   run_tool_env CODEX_PROVIDER_COMPAT_TEST_VERSIONS 'cli=0.144.1;desktop=0.143.0' apply --yes --codex-home "$h" --catalog-file "$FIXTURES/models-valid.json"
