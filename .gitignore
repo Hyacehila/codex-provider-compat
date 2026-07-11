@@ -1,0 +1,13 @@
+*.tmp
+*.log
+.DS_Store
+node_modules/
+test-results/
+tests/.tmp/
+.test-tmp/
+*.tmp-provider-compat-*
+*.pending-provider-compat-*
+provider-compat-transaction.json
+provider-compat-transaction.json.*
+provider-compat.lock
+provider-compat.lock.d/

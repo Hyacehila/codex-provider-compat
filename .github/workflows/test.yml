@@ -1,0 +1,154 @@
+name: test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-powershell-51:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Windows PowerShell 5.1 syntax
+        shell: powershell
+        run: |
+          if ($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1) {
+            throw "expected Windows PowerShell 5.1, got $($PSVersionTable.PSVersion)"
+          }
+          $files = @('./codex-provider-compat.ps1', './tests/test-windows.ps1')
+          foreach ($file in $files) {
+            $errors = $null
+            $tokens = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors) { $errors | Format-List; exit 1 }
+          }
+      - name: Windows PowerShell 5.1 tests
+        shell: powershell
+        run: ./tests/test-windows.ps1
+
+  windows-powershell-7:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: PowerShell 7 syntax
+        shell: pwsh
+        run: |
+          if ($PSVersionTable.PSVersion.Major -ne 7 -or $PSVersionTable.PSVersion -lt [version]'7.5.0') {
+            throw "expected PowerShell 7.5 or later, got $($PSVersionTable.PSVersion)"
+          }
+          $files = @('./codex-provider-compat.ps1', './tests/test-windows.ps1', './tests/test-request-shape-windows.ps1')
+          foreach ($file in $files) {
+            $errors = $null
+            $tokens = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors) { $errors | Format-List; exit 1 }
+          }
+      - name: PowerShell 7 tests
+        shell: pwsh
+        run: ./tests/test-windows.ps1
+
+  static:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fixtures, encoding, whitespace, and delivery-boundary audit
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
+
+          $invalidJsonFixture = 'tests/fixtures/models-invalid.json'
+          foreach ($path in @(git ls-files -- 'tests/fixtures/*.json')) {
+            $raw = Get-Content -LiteralPath $path -Raw
+            if ($path -eq $invalidJsonFixture) {
+              try { $null = $raw | ConvertFrom-Json; throw "$path must remain intentionally invalid/truncated" }
+              catch [System.ArgumentException] { }
+              continue
+            }
+            try { $null = $raw | ConvertFrom-Json }
+            catch { throw "$path is not valid JSON: $($_.Exception.Message)" }
+          }
+
+          foreach ($path in @(git ls-files -- '*.ps1')) {
+            $bytes = [IO.File]::ReadAllBytes((Resolve-Path $path))
+            if ($bytes.Length -lt 3 -or $bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF) {
+              throw "$path must be UTF-8 with BOM"
+            }
+            $text = $strictUtf8.GetString($bytes, 3, $bytes.Length - 3)
+            if ([regex]::IsMatch($text, '(?<!\r)\n|\r(?!\n)')) { throw "$path must use CRLF only" }
+          }
+
+          $lfPaths = @(git ls-files -- '*.sh' '*.yml' '*.yaml' '*.md' '*.json' '*.toml' '.gitattributes' '.gitignore' 'LICENSE')
+          foreach ($path in $lfPaths) {
+            $bytes = [IO.File]::ReadAllBytes((Resolve-Path $path))
+            $null = $strictUtf8.GetString($bytes)
+            if ([Array]::IndexOf($bytes, [byte]0x0D) -ge 0) { throw "$path must use LF without CR bytes" }
+          }
+
+          $trailing = & git grep -n -I -E '[[:blank:]]+$' -- .
+          if ($LASTEXITCODE -eq 0) { throw "trailing whitespace found:`n$($trailing -join "`n")" }
+          if ($LASTEXITCODE -gt 1) { throw "git grep failed with exit code $LASTEXITCODE" }
+
+          # Audit production scripts only. The request-shape test intentionally owns a localhost TcpListener.
+          $production = (Get-Content ./codex-provider-compat.ps1 -Raw) + "`n" + (Get-Content ./codex-provider-compat.sh -Raw)
+          $forbidden = [ordered]@{
+            'credential file access' = '(?i)auth\.json'
+            'API key or token environment access' = '(?i)(OPENAI|CODEX|ANTHROPIC|AZURE_OPENAI)[A-Z0-9_]*(API_?KEY|TOKEN|SECRET)'
+            'listener or API proxy service' = '(?i)(TcpListener|HttpListener|socketserver|socat|nc\s+-l)'
+            'recursive deletion' = '(?im)(Remove-Item[^\r\n]*-Recurse|rm\s+-[A-Za-z]*r[A-Za-z]*f|Directory\]::Delete\([^\r\n]*\$true)'
+            'Codex binary or app-server mutation' = '(?im)(WriteAllBytes|WriteAllText|Copy|Move|Delete|Remove-Item)[^\r\n]*(codex\.exe|app-server)'
+            'developer-specific absolute path' = '(?i)([A-Z]:\\Users\\|D:\\PythonProject\\|/Users/[A-Za-z0-9._-]+/)'
+            'provider-specific production path' = '(?i)claudeaihub'
+            'third-party user runtime' = '(?i)\b(python3?|node|jq|homebrew|brew)\b'
+          }
+          foreach ($entry in $forbidden.GetEnumerator()) {
+            if ([regex]::IsMatch($production, $entry.Value)) { throw "delivery-boundary audit failed: $($entry.Key)" }
+          }
+
+  request-shape:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install fixed Codex CLI
+        shell: pwsh
+        run: |
+          npm install --global --no-audit --no-fund @openai/codex@0.144.1
+          $npmRoot = (npm root -g).Trim()
+          $candidates = @(Get-ChildItem -LiteralPath (Join-Path $npmRoot '@openai\codex\node_modules') -Recurse -Filter codex.exe -File |
+            Where-Object FullName -Match '[\\/]bin[\\/]codex\.exe$')
+          if ($candidates.Count -ne 1) { throw "expected one native codex.exe, found $($candidates.Count)" }
+          "CODEX_BIN=$($candidates[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $version = & $candidates[0].FullName --version
+          if ($LASTEXITCODE -ne 0 -or $version.Trim() -ne 'codex-cli 0.144.1') { throw "unexpected Codex version: $version" }
+      - name: Fixed Codex localhost request-shape gate
+        shell: pwsh
+        run: |
+          if ($PSVersionTable.PSVersion.Major -ne 7 -or $PSVersionTable.PSVersion -lt [version]'7.5.0') {
+            throw "expected PowerShell 7.5 or later, got $($PSVersionTable.PSVersion)"
+          }
+          ./tests/test-request-shape-windows.ps1
+
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare scripts and check shell syntax
+        run: |
+          chmod +x ./codex-provider-compat.sh ./tests/test-macos.sh
+          /bin/sh -n ./codex-provider-compat.sh
+          /bin/sh -n ./tests/test-macos.sh
+      - name: macOS tests
+        run: |
+          /bin/sh ./tests/test-macos.sh

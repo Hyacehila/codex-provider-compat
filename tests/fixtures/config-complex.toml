@@ -1,0 +1,14 @@
+# model_catalog_json = "comment-only.json"
+model = "gpt-5.6-sol" # keep this comment
+model_provider = "custom"
+web_search = "disabled" # user choice
+
+[model_providers.custom]
+name = "Custom"
+model_catalog_json = "section-value-must-not-change.json"
+web_search = "section-value-must-not-change"
+base_url = "https://provider.example.invalid/v1?redacted=yes"
+
+[mcp_servers.example]
+command = "example"
+args = ["--keep", "中文"]
