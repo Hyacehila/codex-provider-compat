@@ -923,7 +923,7 @@ function Invoke-Apply($Options,[string]$CodexRoot){
     if($catalog.AllTargetsAlreadyFalse){Write-Info 'result=not-needed (official/source catalog already uses standard Responses)';return $script:ExitNotApplicable}
     $configPath=Join-Path $CodexRoot 'config.toml';$catalogDir=Join-Path $CodexRoot 'model-catalogs';$generatedPath=Join-Path $catalogDir "models-$version.standard-responses-compat.json"
     try{Assert-SafeOwnedPath $CodexRoot $configPath|Out-Null;Assert-SafeOwnedPath $CodexRoot $catalogDir|Out-Null;Assert-SafeOwnedPath $CodexRoot $generatedPath|Out-Null;$plan=Get-ConfigPlan $configPath $generatedPath $Options.EnableWebSearch}catch{Write-Warn $_.Exception.Message;return $script:ExitUnsafe}
-    Write-Info "plan: generate $generatedPath";Write-Info "plan: backup and update $configPath";if(Test-Path -LiteralPath (Join-Path $CodexRoot 'models_cache.json')){Write-Info 'plan: rename-backup models_cache.json'}
+    Write-Info "plan: generate $generatedPath";Write-Info "plan: backup and update $configPath";if($Options.EnableWebSearch){Write-Info 'plan: set web_search = "live"'};if(Test-Path -LiteralPath (Join-Path $CodexRoot 'models_cache.json')){Write-Info 'plan: rename-backup models_cache.json'}
     if($Options.DryRun){Write-Info 'result=dry-run (zero writes)';return $script:ExitSuccess}
     for($attempt=0;$attempt-lt2;$attempt++){
         if(-not(Confirm-Write $Options 'Apply responses-lite-standard-tools?')){Write-Info 'cancelled';return $script:ExitError};Invoke-TestConfigMutation $configPath

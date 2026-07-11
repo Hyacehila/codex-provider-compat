@@ -274,10 +274,29 @@ t_web_search() {
   /bin/cp "$FIXTURES/config-complex.toml" "$h/config.toml"
   apply_default "$h" --enable-web-search
   assert_eq 0 "$RUN_CODE" apply || return 1
+  assert_contains "$RUN_OUT" 'plan: set web_search = "live"' || return 1
   assert_contains "$h/config.toml" 'web_search = "live" # user choice' || return 1
   rollback_default "$h"
   assert_eq 0 "$RUN_CODE" rollback || return 1
-  assert_contains "$h/config.toml" 'web_search = "disabled" # user choice'
+  assert_contains "$h/config.toml" 'web_search = "disabled" # user choice' || return 1
+  for mode in cached indexed live; do
+    new_home "web-$mode"
+    h=$NEW_HOME
+    printf 'model = "gpt-5.6-sol"\nmodel_provider = "custom"\nweb_search = "%s" # preserve-%s\n\n[model_providers.custom]\nwire_api = "responses"\n' "$mode" "$mode" > "$h/config.toml" || return 1
+    apply_default "$h"
+    assert_eq 0 "$RUN_CODE" "$mode-base-apply" || return 1
+    assert_not_contains "$RUN_OUT" 'plan: set web_search = "live"' || return 1
+    assert_contains "$h/config.toml" "web_search = \"$mode\" # preserve-$mode" || return 1
+    rollback_default "$h"
+    assert_eq 0 "$RUN_CODE" "$mode-base-rollback" || return 1
+    apply_default "$h" --enable-web-search
+    assert_eq 0 "$RUN_CODE" "$mode-enabled-apply" || return 1
+    assert_contains "$RUN_OUT" 'plan: set web_search = "live"' || return 1
+    assert_contains "$h/config.toml" 'web_search = "live"' || return 1
+    rollback_default "$h"
+    assert_eq 0 "$RUN_CODE" "$mode-enabled-rollback" || return 1
+    assert_contains "$h/config.toml" "web_search = \"$mode\" # preserve-$mode" || return 1
+  done
 }
 
 t_dry_run_and_doctor() {
@@ -575,7 +594,17 @@ t_system_alias_normalization() {
   existing="$SUITE_ROOT/existing-alias-probe"
   /bin/mkdir "$existing" || return 1
   expected=$(printf '%s\n' "$existing" | /usr/bin/awk '{gsub(/\/+/,"/");if($0~/^\/(var|tmp|etc)(\/|$)/)print "/private"$0;else print $0}')
-  assert_eq "$expected" "$(absolute_path "$existing")" existing-system-alias || return 1
+  canonical_root=$(absolute_path "$SUITE_ROOT") || return 1
+  canonical_child=$(absolute_path "$existing") || return 1
+  assert_eq "$expected" "$canonical_child" existing-system-alias || return 1
+  guard_fn="$SUITE_ROOT/path-guard-function.sh"
+  /usr/bin/awk '
+    /^path_guard\(\) \{/ { copying=1 }
+    copying && /^path_in_home\(\) \{/ { exit }
+    copying { print }
+  ' "$TOOL" > "$guard_fn" || return 1
+  . "$guard_fn" || return 1
+  assert_eq "$canonical_child" "$(path_guard "$canonical_root" "$canonical_child" inside)" existing-path-guard || return 1
   new_home alias-user-link
   outside="$SUITE_ROOT/alias-user-target"
   /bin/mkdir "$outside" || return 1

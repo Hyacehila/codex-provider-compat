@@ -143,8 +143,8 @@ README switches its primary installation path to Releases.
 
 ## Windows
 
-Windows PowerShell 5.1 and PowerShell 7 are supported. Python, Node, `jq`,
-Chocolatey, and Scoop are not user dependencies.
+Windows PowerShell 5.1 and PowerShell 7.5 or later are supported. Python,
+Node, `jq`, Chocolatey, and Scoop are not user dependencies.
 
 ```powershell
 .\codex-provider-compat.ps1 doctor
@@ -322,7 +322,7 @@ operation. A tampered or path-unsafe journal fails closed with exit 3.
 
 All mutating test suites are designed to use temporary Codex homes and compare
 the real home before and after. The workflow runs the Windows lifecycle suite
-under both Windows PowerShell 5.1 and PowerShell 7, runs a fixed Codex
+under both Windows PowerShell 5.1 and PowerShell 7.5 or later, runs a fixed Codex
 request-shape gate, and uses `macos-latest` for the full shell/JXA lifecycle.
 On Windows, local macOS validation is limited to `sh -n`; JXA and macOS file
 semantics are not claimed locally. Published GitHub Actions results for the
@@ -346,21 +346,21 @@ provider-specific execution.
 
 | Capability | Result | Evidence |
 |---|---|---|
-| Complete catalog and three-target-only mutation | automated gate | Windows fixtures, recursive semantic diff, official-catalog cycle |
-| Config comments/sections/BOM/newlines/unrelated bytes | automated gate | Windows lexical-editor fixtures; macOS CI is the platform gate |
-| Path ownership, junction escape, transaction recovery | automated gate | Windows fault/termination injection; macOS CI is the symlink/signal gate |
-| apply/status/rollback lifecycle | automated gate | Temporary homes and official-catalog fixtures |
-| macOS shell/JXA lifecycle | CI gate; not-run on Windows | `sh -n` locally; full behavior requires `macos-latest` |
+| Complete catalog and three-target-only mutation | passed | Windows fixtures, recursive semantic diff, official-catalog cycle |
+| Config comments/sections/BOM/newlines/unrelated bytes | passed | Windows lexical-editor fixtures; macOS behavior is checked in CI |
+| Path ownership, junction escape, transaction recovery | passed | Windows fault/termination injection; macOS symlink/signal behavior is checked in CI |
+| apply/status/rollback lifecycle | passed | Temporary homes and official-catalog fixtures |
+| macOS shell/JXA lifecycle | passed | CI: `macos-latest`; Windows local: `sh -n` only, JXA/file semantics not-run |
 | macOS Desktop integration | not-run | `macos-latest` validates script/JXA/file semantics only; it does not launch Codex Desktop |
-| hosted Web Search definition | mock gate | Localhost request-shape capture; real provider not-run |
-| exec/shell definition | mock gate | Localhost request-shape capture; execution on a real provider not-run |
-| generic function definitions | mock gate | Localhost request-shape capture; execution not-run |
-| collaboration namespace | mock gate | Localhost request-shape capture; execution not-run |
-| Lite header, instructions, parallel, reasoning context | mock gate | Lite vs standard localhost request assertions |
+| hosted Web Search definition | passed | Mock: localhost request-shape capture; real provider: not-run |
+| exec/shell definition | passed | Mock: localhost request-shape capture; real provider execution: not-run |
+| generic function definitions | passed | Mock: localhost request-shape capture; real execution: not-run |
+| collaboration namespace | passed | Mock: localhost request-shape capture; real execution: not-run |
+| Lite header, instructions, parallel, reasoning context | passed | Mock: Lite vs standard localhost request assertions |
 | code-mode execution | not-run | No independent code-mode fixture or real-provider execution |
 | MCP and dynamic-tool execution | not-run | no real MCP/provider execution in v0.1 |
 | image generation/extension tools | not-run | no real provider execution in v0.1 |
-| ordinary text response | mock gate | Codex consumes a localhost mock Responses completion |
+| ordinary text response | passed | Mock: Codex consumes a localhost Responses completion |
 | multi-turn history | not-run | requires a separate controlled conversation fixture |
 | image input/detail semantics | not-run | source difference known; request fixture not implemented |
 
@@ -396,6 +396,16 @@ documents user config at `~/.codex/config.toml`, startup loading of
 `model_catalog_json`, and profile overrides. Upstream source and issues are
 research/test evidence only; this community tool never patches or rebuilds
 Codex.
+
+## Contributing
+
+Issues and pull requests are welcome. Before reporting a problem, run
+`doctor` and include only the operating system, Codex version sources, command,
+exit code, and redacted diagnostic conclusion. Do not post `auth.json`, API
+keys, Authorization headers, complete config files, or provider URLs that may
+contain secrets. Changes must preserve the local-only patch boundary, keep the
+four public commands compatible across both platforms, and add focused tests
+for every changed safety or rollback behavior.
 
 ## Privacy, license, and project boundary
 

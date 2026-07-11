@@ -93,9 +93,15 @@ path_guard() {
   mode=${3:-inside}
   /usr/bin/osascript -l JavaScript - "$root" "$target" "$mode" <<'JXA'
 ObjC.import('Foundation');
+function normalizeAppleSystemAliasResult(p) {
+  if (p === '/var' || p.startsWith('/var/')) return '/private' + p;
+  if (p === '/tmp' || p.startsWith('/tmp/')) return '/private' + p;
+  if (p === '/etc' || p.startsWith('/etc/')) return '/private' + p;
+  return p;
+}
 function standard(p) {
   if (typeof p !== 'string' || !p || /[\u0000\r\n]/.test(p)) throw Error('invalid path');
-  let q = $(p).stringByExpandingTildeInPath.stringByStandardizingPath.js;
+  let q = normalizeAppleSystemAliasResult($(p).stringByExpandingTildeInPath.stringByStandardizingPath.js);
   if (!q.startsWith('/')) throw Error('path is not absolute');
   return q;
 }
@@ -860,7 +866,13 @@ function exact(o, keys, name) {
   let actual = Object.keys(o).sort(), expected = keys.slice().sort();
   req(JSON.stringify(actual) === JSON.stringify(expected), 'unexpected ' + name + ' fields');
 }
-function std(p) { return $(p).stringByStandardizingPath.js; }
+function normalizeAppleSystemAliasResult(p) {
+  if (p === '/var' || p.startsWith('/var/')) return '/private' + p;
+  if (p === '/tmp' || p.startsWith('/tmp/')) return '/private' + p;
+  if (p === '/etc' || p.startsWith('/etc/')) return '/private' + p;
+  return p;
+}
+function std(p) { return normalizeAppleSystemAliasResult($(p).stringByStandardizingPath.js); }
 function inside(root, p) { return typeof p === 'string' && std(p) === p && p !== root && p.startsWith(root + '/') && !/[\u0000\r\n]/.test(p); }
 function hash(s, nullable) { return nullable && s === null || typeof s === 'string' && /^[0-9A-Fa-f]{64}$/.test(s); }
 function leaf(p) { return p.slice(p.lastIndexOf('/') + 1); }
@@ -1075,7 +1087,13 @@ function exact(o, keys, name) {
   let actual = Object.keys(o).sort(), expected = keys.slice().sort();
   req(JSON.stringify(actual) === JSON.stringify(expected), 'unexpected ' + name + ' fields');
 }
-function std(p) { return $(p).stringByStandardizingPath.js; }
+function normalizeAppleSystemAliasResult(p) {
+  if (p === '/var' || p.startsWith('/var/')) return '/private' + p;
+  if (p === '/tmp' || p.startsWith('/tmp/')) return '/private' + p;
+  if (p === '/etc' || p.startsWith('/etc/')) return '/private' + p;
+  return p;
+}
+function std(p) { return normalizeAppleSystemAliasResult($(p).stringByStandardizingPath.js); }
 function inside(root, p) { return typeof p === 'string' && std(p) === p && p !== root && p.startsWith(root + '/') && !/[\u0000\r\n]/.test(p); }
 function hash(s) { return s === null || typeof s === 'string' && /^[0-9A-Fa-f]{64}$/.test(s); }
 function leaf(p) { return p.slice(p.lastIndexOf('/') + 1); }
@@ -1761,6 +1779,7 @@ apply_cmd() {
   prepare_apply_config || { warn 'config validation failed'; return $EX_UNSAFE; }
   info "plan: generate $generated"
   info "plan: backup and update $CODEX_ROOT/config.toml"
+  [ "$ENABLE_WEB_SEARCH" -eq 1 ] && info 'plan: set web_search = "live"'
   if [ "$DRY_RUN" -eq 1 ]; then info 'result=dry-run (zero writes)'; return 0; fi
   confirm_write 'Apply responses-lite-standard-tools?' || return $EX_ERROR
   ensure_home || return $EX_UNSAFE

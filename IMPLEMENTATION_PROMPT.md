@@ -303,7 +303,7 @@ apply 和 rollback 最后必须明确输出：
 - 文件不存在、空文件、简单配置、复杂 provider sections；
 - 注释、空行、CRLF、LF、BOM；
 - 已有 catalog；
-- 已有 live/cached/disabled；
+- 已有 live/cached/indexed/disabled；
 - section 或注释中出现相似文本；
 - 重复顶层键；
 - 路径含空格和中文；

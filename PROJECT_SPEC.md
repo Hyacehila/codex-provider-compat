@@ -655,7 +655,7 @@ web_search = "live"
 ### 14.5 可选 `web_search` 策略
 
 - 基础 `apply` 不改变用户的 `web_search`。
-- 使用 `--enable-web-search` 时：若不存在则添加 `web_search = "live"`；若已为 `live` 则保持；若为 `cached` 或 `disabled`，明确展示将发生的修改并记录原值。
+- 使用 `--enable-web-search` 时：若不存在则添加 `web_search = "live"`；若已为 `live` 则保持；若为 `cached`、`indexed` 或 `disabled`，明确展示将发生的修改并记录原值。
 - `doctor` 始终报告 Web Search 配置，但不得把它当作唯一兼容性判断。
 
 ## 15. 模型缓存处理
@@ -901,7 +901,7 @@ README 必须用醒目章节说明：
 - UTF-8 BOM 和无 BOM（在平台合理支持范围内）。
 - 已存在 `model_catalog_json`。
 - 已存在其他用户 catalog override。
-- `web_search` 不存在、live、cached、disabled，并验证基础 apply 不会擅自修改它。
+- `web_search` 不存在、live、cached、indexed、disabled，并验证基础 apply 不会擅自修改它。
 - section 中出现相似字符串时不误改。
 - 注释里出现 `model_catalog_json` 时不误改。
 - 四种字符串、数组、inline table 和多行字符串中出现相似文本时不误改。

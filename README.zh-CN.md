@@ -103,7 +103,7 @@ chmod +x ./codex-provider-compat.sh
 
 ## Windows
 
-支持 Windows PowerShell 5.1 和 PowerShell 7。普通用户不需要 Python、Node、`jq`、Chocolatey 或 Scoop。
+支持 Windows PowerShell 5.1 和 PowerShell 7.5 及以上版本。普通用户不需要 Python、Node、`jq`、Chocolatey 或 Scoop。
 
 ```powershell
 .\codex-provider-compat.ps1 doctor
@@ -231,7 +231,7 @@ rollback 不会覆盖 apply 后由用户改动过的 owned key。只有生成 ca
 
 ## 测试与能力矩阵
 
-所有写操作测试套件都设计为使用临时 Codex home，并比较测试前后的真实 home。workflow 会分别在 Windows PowerShell 5.1 和 PowerShell 7 下运行 Windows 生命周期套件，运行固定 Codex 请求形态门禁，并由 `macos-latest` 执行完整 shell/JXA 生命周期。Windows 本地对 macOS 只能准确声称通过 `sh -n`；JXA 和 macOS 文件语义不能作为本地已通过项目。每个明确 commit 的 GitHub Actions 结果才是最终通过与否的权威记录。
+所有写操作测试套件都设计为使用临时 Codex home，并比较测试前后的真实 home。workflow 会分别在 Windows PowerShell 5.1 和 PowerShell 7.5 及以上版本下运行 Windows 生命周期套件，运行固定 Codex 请求形态门禁，并由 `macos-latest` 执行完整 shell/JXA 生命周期。Windows 本地对 macOS 只能准确声称通过 `sh -n`；JXA 和 macOS 文件语义不能作为本地已通过项目。每个明确 commit 的 GitHub Actions 结果才是最终通过与否的权威记录。
 
 `macos-latest` 只验证脚本、JXA 和文件语义，不会启动或操作 Codex Desktop；macOS Desktop 集成仍是 `not-run`，需要另行受控人工验证。
 
@@ -241,21 +241,21 @@ rollback 不会覆盖 apply 后由用户改动过的 owned key。只有生成 ca
 
 | 能力 | 结果 | 证据 |
 |---|---|---|
-| 完整 catalog 与只修改三个目标 | 自动化门禁 | Windows fixtures、递归语义比较、官方 catalog 生命周期 |
-| config 注释、section、BOM、换行、无关字节 | 自动化门禁 | Windows 词法编辑 fixtures；macOS 以 CI 为平台门禁 |
-| 路径所有权、junction 逃逸、事务恢复 | 自动化门禁 | Windows 故障/终止注入；macOS CI 是 symlink/信号门禁 |
-| apply/status/rollback 生命周期 | 自动化门禁 | 临时 home 和官方 catalog fixtures |
-| macOS shell/JXA 生命周期 | CI 门禁；Windows 未运行 | 本地只做 `sh -n`；完整行为必须由 `macos-latest` 验证 |
+| 完整 catalog 与只修改三个目标 | passed | Windows fixtures、递归语义比较、官方 catalog 生命周期 |
+| config 注释、section、BOM、换行、无关字节 | passed | Windows 词法编辑 fixtures；macOS 行为由 CI 验证 |
+| 路径所有权、junction 逃逸、事务恢复 | passed | Windows 故障/终止注入；macOS symlink/信号行为由 CI 验证 |
+| apply/status/rollback 生命周期 | passed | 临时 home 和官方 catalog fixtures |
+| macOS shell/JXA 生命周期 | passed | CI：`macos-latest`；Windows 本地只做 `sh -n`，JXA/文件语义 not-run |
 | macOS Desktop 集成 | not-run | `macos-latest` 只验证脚本/JXA/文件语义，不启动 Codex Desktop |
-| hosted Web Search 定义 | mock 门禁 | localhost 请求形态捕获；真实 provider not-run |
-| exec/shell 定义 | mock 门禁 | localhost 请求形态捕获；真实 provider 执行 not-run |
-| 普通 function 定义 | mock 门禁 | localhost 请求形态捕获；实际执行 not-run |
-| collaboration namespace | mock 门禁 | localhost 请求形态捕获；实际执行 not-run |
-| Lite header、instructions、parallel、reasoning context | mock 门禁 | Lite/标准 localhost 请求断言 |
+| hosted Web Search 定义 | passed | mock：localhost 请求形态捕获；真实 provider：not-run |
+| exec/shell 定义 | passed | mock：localhost 请求形态捕获；真实 provider 执行：not-run |
+| 普通 function 定义 | passed | mock：localhost 请求形态捕获；真实执行：not-run |
+| collaboration namespace | passed | mock：localhost 请求形态捕获；真实执行：not-run |
+| Lite header、instructions、parallel、reasoning context | passed | mock：Lite/标准 localhost 请求断言 |
 | code mode 实际执行 | not-run | 没有独立 code-mode fixture，也未连接真实 provider 执行 |
 | MCP 和 dynamic tools 实际执行 | not-run | v0.1 未连接真实 MCP/provider |
 | image generation/extension tools | not-run | v0.1 未连接真实 provider |
-| 普通文本响应 | mock 门禁 | Codex 消费 localhost mock Responses completion |
+| 普通文本响应 | passed | mock：Codex 消费 localhost Responses completion |
 | 多轮历史 | not-run | 需要独立受控会话 fixture |
 | 图片输入/detail 语义 | not-run | 已知源码差异，尚未加入请求 fixture |
 
@@ -276,6 +276,10 @@ rollback 不会覆盖 apply 后由用户改动过的 owned key。只有生成 ca
 在该快照中，`#32119` 已关闭，但处理的是自定义 provider 的远程模型刷新，不是 Lite 工具协议。历史材料引用 `#31853` 和 `#31872` 是编号错误：它们属于无关内容，不再作为证据。
 
 官方[配置参考](https://learn.chatgpt.com/docs/config-file/config-reference#configtoml)确认用户配置位于 `~/.codex/config.toml`，`model_catalog_json` 在启动时加载，选中的 profile 可以覆盖它。上游源码和 Issue 只用于研究和测试，本工具不会修改或重编译 Codex。
+
+## 参与贡献
+
+欢迎提交 Issue 和 Pull Request。报告问题前请先运行 `doctor`，并且只提供操作系统、Codex 版本来源、执行命令、退出码和经过脱敏的诊断结论。不要公开 `auth.json`、API Key、Authorization header、完整 config，或可能含 secret 的 provider URL。任何改动都必须保持“仅修改本机 Codex home”的交付边界，确保两个平台的四个公共命令兼容，并为安全、事务或 rollback 行为的变化补充针对性测试。
 
 ## 隐私、许可证和项目边界
 

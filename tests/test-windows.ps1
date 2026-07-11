@@ -174,8 +174,14 @@ Test-Case 'apply/status/rollback full cycle, semantic catalog protection, and se
 
 Test-Case 'web search update and rollback preserve exact user comment' {
     $CodexRoot=New-TestHome 'web';Copy-Fixture 'config-complex.toml' (Join-Path $CodexRoot 'config.toml');$r=Invoke-Tool ((Apply-Args $CodexRoot)+@('--enable-web-search'));Assert-Equal 0 $r.ExitCode $r.Output
+    Assert-Contains $r.Output 'plan: set web_search = "live"' 'web_search plan was not explicit'
     $text=[IO.File]::ReadAllText((Join-Path $CodexRoot 'config.toml'),[Text.Encoding]::UTF8);Assert-Contains $text 'web_search = "live" # user choice' 'web_search was not updated safely'
     Assert-Equal 0 (Invoke-Tool (Rollback-Args $CodexRoot)).ExitCode 'rollback';$restored=[IO.File]::ReadAllText((Join-Path $CodexRoot 'config.toml'),[Text.Encoding]::UTF8);Assert-Contains $restored 'web_search = "disabled" # user choice' 'original web_search literal/comment not restored'
+    foreach($mode in @('cached','indexed','live')){
+        $modeHome=New-TestHome "web-$mode";$config=Join-Path $modeHome 'config.toml';Write-Utf8 $config "model = `"gpt-5.6-sol`"`nmodel_provider = `"custom`"`nweb_search = `"$mode`" # preserve-$mode`n`n[model_providers.custom]`nwire_api = `"responses`"`n"
+        $base=Invoke-Tool (Apply-Args $modeHome);Assert-Equal 0 $base.ExitCode "$mode base apply";Assert-NotContains $base.Output 'plan: set web_search = "live"' "$mode base apply advertised an unrequested web_search change";$baseText=[IO.File]::ReadAllText($config,[Text.Encoding]::UTF8);Assert-Contains $baseText "web_search = `"$mode`" # preserve-$mode" "$mode changed without opt-in";Assert-Equal 0 (Invoke-Tool (Rollback-Args $modeHome)).ExitCode "$mode base rollback"
+        $enabled=Invoke-Tool ((Apply-Args $modeHome)+@('--enable-web-search'));Assert-Equal 0 $enabled.ExitCode "$mode enabled apply";Assert-Contains $enabled.Output 'plan: set web_search = "live"' "$mode enabled apply did not advertise web_search";$enabledText=[IO.File]::ReadAllText($config,[Text.Encoding]::UTF8);Assert-Contains $enabledText 'web_search = "live"' "$mode was not changed to live";Assert-Equal 0 (Invoke-Tool (Rollback-Args $modeHome)).ExitCode "$mode enabled rollback";$modeRestored=[IO.File]::ReadAllText($config,[Text.Encoding]::UTF8);Assert-Contains $modeRestored "web_search = `"$mode`" # preserve-$mode" "$mode was not restored exactly"
+    }
 }
 
 Test-Case 'missing config is removed on rollback while an originally empty config stays empty' {
