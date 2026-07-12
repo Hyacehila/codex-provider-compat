@@ -1,0 +1,183 @@
+name: package release assets
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Stable version to package, without the v prefix
+        required: true
+        default: 0.1.0
+        type: string
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Resolve and validate version
+        id: version
+        shell: pwsh
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:EVENT_NAME -eq 'push') {
+            if ($env:REF_NAME -notmatch '^v([0-9]+\.[0-9]+\.[0-9]+)$') {
+              throw "release tag must be v<major>.<minor>.<patch>: $env:REF_NAME"
+            }
+            $version = $Matches[1]
+          }
+          else {
+            $version = $env:INPUT_VERSION.Trim()
+            if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') {
+              throw "version must be <major>.<minor>.<patch>: $version"
+            }
+          }
+          "value=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Parse packaging scripts
+        shell: pwsh
+        run: |
+          foreach ($path in @('./scripts/build-release.ps1', './tests/test-release-package.ps1')) {
+            $errors = $null
+            $tokens = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $path), [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors) { $errors | Format-List; exit 1 }
+          }
+
+      - name: Reproducibility and archive tests
+        shell: pwsh
+        run: ./tests/test-release-package.ps1
+
+      - name: Build release assets
+        shell: pwsh
+        run: ./scripts/build-release.ps1 -Version '${{ steps.version.outputs.value }}' -OutputDirectory ./dist
+
+      - name: Verify clean tracked files
+        shell: pwsh
+        run: |
+          if (-not (Test-Path ./dist/SHA256SUMS.txt -PathType Leaf)) { throw 'missing SHA256SUMS.txt' }
+          git diff --exit-code -- .
+          if ($LASTEXITCODE -ne 0) { throw 'release build modified tracked files' }
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-provider-compat-v${{ steps.version.outputs.value }}-release-assets
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  verify-windows-archive:
+    needs: package
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Download packaged assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codex-provider-compat-v${{ needs.package.outputs.version }}-release-assets
+          path: dist
+      - name: Verify Windows package extraction and doctor
+        shell: powershell
+        env:
+          RELEASE_VERSION: ${{ needs.package.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $manifest = @(Get-Content -LiteralPath ./dist/SHA256SUMS.txt)
+          if ($manifest.Count -ne 4) { throw 'SHA256SUMS.txt must contain four entries' }
+          foreach ($line in $manifest) {
+            if ($line -notmatch '^([0-9a-f]{64})  ([A-Za-z0-9._-]+)$') { throw "invalid checksum line: $line" }
+            $actual = (Get-FileHash -LiteralPath (Join-Path ./dist $Matches[2]) -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $Matches[1]) { throw "checksum mismatch: $($Matches[2])" }
+          }
+
+          $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("provider-compat-release-{0}" -f [Guid]::NewGuid().ToString('N'))
+          try {
+            $extract = Join-Path $tempRoot 'extract'
+            $codexHome = Join-Path $tempRoot 'Codex home 测试'
+            $null = New-Item -ItemType Directory -Path $extract, $codexHome -Force
+            Expand-Archive -LiteralPath "./dist/codex-provider-compat-v$env:RELEASE_VERSION-windows.zip" -DestinationPath $extract
+            $scriptPath = Join-Path $extract "codex-provider-compat-v$env:RELEASE_VERSION-windows/codex-provider-compat.ps1"
+            $standaloneHash = (Get-FileHash -LiteralPath ./dist/codex-provider-compat.ps1 -Algorithm SHA256).Hash
+            $packagedHash = (Get-FileHash -LiteralPath $scriptPath -Algorithm SHA256).Hash
+            if ($standaloneHash -ne $packagedHash) { throw 'standalone and ZIP PowerShell scripts differ' }
+            $errors = $null
+            $tokens = $null
+            [Management.Automation.Language.Parser]::ParseFile((Resolve-Path $scriptPath), [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors) { $errors | Format-List; throw 'packaged PowerShell script has syntax errors' }
+
+            Copy-Item -LiteralPath ./tests/fixtures/config-basic.toml -Destination (Join-Path $codexHome 'config.toml')
+            $before = (Get-FileHash -LiteralPath (Join-Path $codexHome 'config.toml') -Algorithm SHA256).Hash
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $scriptPath doctor --codex-home $codexHome --codex-version 0.144.1 --catalog-file (Resolve-Path ./tests/fixtures/models-valid.json)
+            if ($LASTEXITCODE -ne 0) { throw "packaged doctor exited $LASTEXITCODE" }
+            $after = (Get-FileHash -LiteralPath (Join-Path $codexHome 'config.toml') -Algorithm SHA256).Hash
+            if ($after -ne $before) { throw 'packaged doctor modified config.toml' }
+            if (@(Get-ChildItem -LiteralPath $codexHome -File -Recurse).Count -ne 1) { throw 'packaged doctor wrote unexpected files' }
+          }
+          finally {
+            $fullTempRoot = [IO.Path]::GetFullPath($tempRoot)
+            $tempBase = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+            if (-not $fullTempRoot.StartsWith($tempBase, [StringComparison]::OrdinalIgnoreCase)) { throw "unsafe cleanup path: $fullTempRoot" }
+            if (Test-Path -LiteralPath $fullTempRoot) { Remove-Item -LiteralPath $fullTempRoot -Recurse -Force }
+          }
+
+  verify-macos-archive:
+    needs: package
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Download packaged assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: codex-provider-compat-v${{ needs.package.outputs.version }}-release-assets
+          path: dist
+      - name: Verify macOS package extraction and doctor
+        env:
+          RELEASE_VERSION: ${{ needs.package.outputs.version }}
+        run: |
+          set -eu
+          (cd dist && /usr/bin/shasum -a 256 -c SHA256SUMS.txt)
+          base=${TMPDIR:-/tmp}
+          base=${base%/}
+          tmp=$(/usr/bin/mktemp -d "$base/provider-compat-release.XXXXXX")
+          cleanup() {
+            case "$tmp" in
+              "$base"/provider-compat-release.*) /bin/rm -rf -- "$tmp" ;;
+              *) printf '%s\n' "unsafe cleanup path: $tmp" >&2; exit 1 ;;
+            esac
+          }
+          trap cleanup 0 1 2 15
+          /usr/bin/unzip -q "dist/codex-provider-compat-v${RELEASE_VERSION}-macos.zip" -d "$tmp/extract"
+          script="$tmp/extract/codex-provider-compat-v${RELEASE_VERSION}-macos/codex-provider-compat.sh"
+          test -x "$script"
+          /usr/bin/cmp dist/codex-provider-compat.sh "$script"
+          /bin/sh -n dist/codex-provider-compat.sh
+          /bin/sh -n "$script"
+          home="$tmp/Codex home 测试"
+          /bin/mkdir -p "$home"
+          /bin/cp ./tests/fixtures/config-basic.toml "$home/config.toml"
+          before=$(/usr/bin/shasum -a 256 "$home/config.toml" | /usr/bin/awk '{print $1}')
+          "$script" doctor --codex-home "$home" --codex-version 0.144.1 --catalog-file "$GITHUB_WORKSPACE/tests/fixtures/models-valid.json"
+          after=$(/usr/bin/shasum -a 256 "$home/config.toml" | /usr/bin/awk '{print $1}')
+          test "$before" = "$after"
+          test "$(/usr/bin/find "$home" -type f | /usr/bin/wc -l | /usr/bin/tr -d ' ')" = 1

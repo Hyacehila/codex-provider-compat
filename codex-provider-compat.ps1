@@ -1,5 +1,8 @@
 ﻿#!/usr/bin/env pwsh
 
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 codex-provider-compat contributors
+
 $ErrorActionPreference = 'Stop'
 $script:ToolVersion = '0.1.0'
 $script:PatchId = 'responses-lite-standard-tools'
@@ -18,7 +21,7 @@ $script:ExitNetwork = 5
 $script:TestMutationCount = 0
 
 function Assert-InternalTestAuthorization {
-    $hookNames=@('CODEX_PROVIDER_COMPAT_TEST_VERSIONS','CODEX_PROVIDER_COMPAT_TEST_DOWNLOAD_MODE','CODEX_PROVIDER_COMPAT_TEST_FAIL_STAGE','CODEX_PROVIDER_COMPAT_TEST_CRASH_STAGE','CODEX_PROVIDER_COMPAT_TEST_MUTATE_CONFIG_AFTER_CONFIRM','CODEX_PROVIDER_COMPAT_TEST_MUTATE_CONFIG_BEFORE_WRITE','CODEX_PROVIDER_COMPAT_INTERNAL_TEST_URL','CODEX_PROVIDER_COMPAT_INTERNAL_TEST_TIMEOUT_MS','CODEX_PROVIDER_COMPAT_INTERNAL_TEST_TRANSPORT')
+    $hookNames=@('CODEX_PROVIDER_COMPAT_TEST_VERSIONS','CODEX_PROVIDER_COMPAT_TEST_DOWNLOAD_MODE','CODEX_PROVIDER_COMPAT_TEST_FAIL_STAGE','CODEX_PROVIDER_COMPAT_TEST_CRASH_STAGE','CODEX_PROVIDER_COMPAT_TEST_PAUSE_STAGE','CODEX_PROVIDER_COMPAT_TEST_PAUSE_EVENT','CODEX_PROVIDER_COMPAT_TEST_MUTATE_CONFIG_AFTER_CONFIRM','CODEX_PROVIDER_COMPAT_TEST_MUTATE_CONFIG_BEFORE_WRITE','CODEX_PROVIDER_COMPAT_INTERNAL_TEST_URL','CODEX_PROVIDER_COMPAT_INTERNAL_TEST_TIMEOUT_MS','CODEX_PROVIDER_COMPAT_INTERNAL_TEST_TRANSPORT')
     $used=$false;foreach($hookName in $hookNames){if(-not[string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($hookName,'Process'))){$used=$true;break}}
     if($used-and[Environment]::GetEnvironmentVariable('CODEX_PROVIDER_COMPAT_INTERNAL_TEST_CONFIRM','Process')-ne'I-understand-this-is-test-only'){throw 'internal test hooks are disabled without CODEX_PROVIDER_COMPAT_INTERNAL_TEST_CONFIRM=I-understand-this-is-test-only'}
 }
@@ -28,9 +31,56 @@ if (-not ('ProviderCompatNative' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
+using System.Threading;
 public static class ProviderCompatNative {
+    private delegate bool ConsoleControlHandler(int controlType);
+    private static ConsoleControlHandler cancellationHandler;
+    private static int cancellationHandlerInstalled;
+    private static int cancellationRequested;
+
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern bool MoveFileEx(string existingFileName, string newFileName, int flags);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetConsoleCtrlHandler(ConsoleControlHandler handler, bool add);
+
+    private static bool HandleConsoleControl(int controlType) {
+        if (controlType != 0 && controlType != 1) {
+            return false;
+        }
+        Interlocked.Exchange(ref cancellationRequested, 1);
+        return true;
+    }
+
+    public static bool InstallCancellationHandler() {
+        Interlocked.Exchange(ref cancellationRequested, 0);
+        if (Interlocked.CompareExchange(ref cancellationHandlerInstalled, 0, 0) != 0) {
+            return true;
+        }
+        cancellationHandler = new ConsoleControlHandler(HandleConsoleControl);
+        if (!SetConsoleCtrlHandler(cancellationHandler, true)) {
+            cancellationHandler = null;
+            return false;
+        }
+        Interlocked.Exchange(ref cancellationHandlerInstalled, 1);
+        return true;
+    }
+
+    public static bool RemoveCancellationHandler() {
+        if (Interlocked.CompareExchange(ref cancellationHandlerInstalled, 0, 0) == 0) {
+            return true;
+        }
+        if (!SetConsoleCtrlHandler(cancellationHandler, false)) {
+            return false;
+        }
+        Interlocked.Exchange(ref cancellationHandlerInstalled, 0);
+        cancellationHandler = null;
+        return true;
+    }
+
+    public static bool CancellationRequested {
+        get { return Interlocked.CompareExchange(ref cancellationRequested, 0, 0) != 0; }
+    }
 }
 '@
 }
@@ -208,7 +258,39 @@ function Get-UniquePath([string]$BasePath) {
     throw "could not allocate unique backup path for $BasePath"
 }
 
+function Enter-OperationInterruptScope {
+    if (-not [ProviderCompatNative]::InstallCancellationHandler()) {
+        throw (New-Object ComponentModel.Win32Exception([Runtime.InteropServices.Marshal]::GetLastWin32Error()))
+    }
+    return $true
+}
+
+function Exit-OperationInterruptScope {
+    if (-not [ProviderCompatNative]::RemoveCancellationHandler()) {
+        Write-Warn ("could not unregister the console interrupt handler: " + (New-Object ComponentModel.Win32Exception([Runtime.InteropServices.Marshal]::GetLastWin32Error())).Message)
+    }
+}
+
+function Assert-OperationNotCancelled {
+    if ([ProviderCompatNative]::CancellationRequested) {
+        throw (New-Object OperationCanceledException 'operation interrupted by Ctrl+C or Ctrl+Break')
+    }
+}
+
 function Invoke-TestFault([string]$Stage) {
+    Assert-OperationNotCancelled
+    if ($env:CODEX_PROVIDER_COMPAT_TEST_PAUSE_STAGE -eq $Stage) {
+        if (-not [string]::IsNullOrWhiteSpace($env:CODEX_PROVIDER_COMPAT_TEST_PAUSE_EVENT)) {
+            $readyEvent = [Threading.EventWaitHandle]::OpenExisting($env:CODEX_PROVIDER_COMPAT_TEST_PAUSE_EVENT)
+            try { [void]$readyEvent.Set() } finally { $readyEvent.Dispose() }
+        }
+        $deadline = [DateTime]::UtcNow.AddSeconds(30)
+        while (-not [ProviderCompatNative]::CancellationRequested) {
+            if ([DateTime]::UtcNow -ge $deadline) { throw "timed out waiting for a console interrupt at $Stage" }
+            [Threading.Thread]::Sleep(20)
+        }
+        Assert-OperationNotCancelled
+    }
     if ($env:CODEX_PROVIDER_COMPAT_TEST_CRASH_STAGE -eq $Stage) { [Environment]::Exit(91) }
     if ($env:CODEX_PROVIDER_COMPAT_TEST_FAIL_STAGE -eq $Stage) { throw "injected failure at $Stage" }
 }
@@ -816,11 +898,11 @@ function Remove-TransactionAtomicTemps([string]$CodexRoot,$Transaction){
     foreach($destination in $destinations){Remove-AtomicTemp $CodexRoot $destination ([string]$Transaction.nonce)}
 }
 
-function Recover-ApplyTransaction([string]$CodexRoot,$Transaction){
+function Recover-ApplyTransaction([string]$CodexRoot,$Transaction,[bool]$PreferRestore=$false){
     $paths=$Transaction.paths;$hashes=$Transaction.hashes
     $stateComplete=$false
     if(Test-Path -LiteralPath $paths.state){try{$state=Read-State $CodexRoot;$stateComplete=(Get-Sha256 $paths.state)-eq([string]$hashes.state).ToUpperInvariant() -and (Get-Sha256 $paths.generated_catalog)-eq([string]$hashes.generated_catalog).ToUpperInvariant() -and (Get-Sha256 $paths.config)-eq([string]$hashes.config_after).ToUpperInvariant()}catch{$stateComplete=$false}}
-    if($stateComplete){Remove-VerifiedOwnedFile $CodexRoot (Get-TransactionPath $CodexRoot) $null;return 'committed'}
+    if($stateComplete-and-not$PreferRestore){Remove-VerifiedOwnedFile $CodexRoot (Get-TransactionPath $CodexRoot) $null;return 'committed'}
     if(Test-Path -LiteralPath $paths.state){Remove-VerifiedOwnedFile $CodexRoot $paths.state ([string]$hashes.state)}
     $currentConfig=Get-Sha256 $paths.config
     $configMayHaveBeenWritten=$Transaction.phase -in @('config-written','state-written') -or ($currentConfig -and $currentConfig -eq([string]$hashes.config_after).ToUpperInvariant())
@@ -837,10 +919,10 @@ function Recover-ApplyTransaction([string]$CodexRoot,$Transaction){
     return 'restored'
 }
 
-function Recover-RollbackTransaction([string]$CodexRoot,$Transaction){
+function Recover-RollbackTransaction([string]$CodexRoot,$Transaction,[bool]$PreferRestore=$false){
     $p=$Transaction.paths;$h=$Transaction.hashes
     $archiveComplete=(Test-Path -LiteralPath $p.state_archive) -and -not(Test-Path -LiteralPath $p.state) -and (Get-Sha256 $p.state_archive)-eq([string]$h.state).ToUpperInvariant()
-    if($archiveComplete){if(Test-Path -LiteralPath $p.generated_catalog_pending){Remove-VerifiedOwnedFile $CodexRoot $p.generated_catalog_pending ([string]$h.generated_catalog)};if(Test-Path -LiteralPath $p.config_snapshot){Remove-VerifiedOwnedFile $CodexRoot $p.config_snapshot ([string]$h.config_before)};Remove-VerifiedOwnedFile $CodexRoot (Get-TransactionPath $CodexRoot) $null;return 'committed'}
+    if($archiveComplete-and-not$PreferRestore){if(Test-Path -LiteralPath $p.generated_catalog_pending){Remove-VerifiedOwnedFile $CodexRoot $p.generated_catalog_pending ([string]$h.generated_catalog)};if(Test-Path -LiteralPath $p.config_snapshot){Remove-VerifiedOwnedFile $CodexRoot $p.config_snapshot ([string]$h.config_before)};Remove-VerifiedOwnedFile $CodexRoot (Get-TransactionPath $CodexRoot) $null;return 'committed'}
     if(Test-Path -LiteralPath $p.state_archive){if(Test-Path -LiteralPath $p.state){throw 'cannot recover rollback: state and archive both exist'};if((Get-Sha256 $p.state_archive)-ne([string]$h.state).ToUpperInvariant()){throw 'cannot recover rollback: state archive drifted'};[IO.File]::Move($p.state_archive,$p.state)}
     $configHash=Get-Sha256 $p.config
     $configMayHaveBeenWritten=$Transaction.phase -in @('config-written','state-archived') -or (($h.config_after -and $configHash -eq([string]$h.config_after).ToUpperInvariant()) -or (-not $h.config_after -and -not $configHash))
@@ -856,7 +938,7 @@ function Recover-RollbackTransaction([string]$CodexRoot,$Transaction){
     return 'restored'
 }
 
-function Recover-Transaction([string]$CodexRoot,$Transaction){$oldFail=$env:CODEX_PROVIDER_COMPAT_TEST_FAIL_STAGE;$oldCrash=$env:CODEX_PROVIDER_COMPAT_TEST_CRASH_STAGE;$env:CODEX_PROVIDER_COMPAT_TEST_FAIL_STAGE=$null;$env:CODEX_PROVIDER_COMPAT_TEST_CRASH_STAGE=$null;try{Remove-TransactionAtomicTemps $CodexRoot $Transaction;if($Transaction.operation -eq 'apply'){return Recover-ApplyTransaction $CodexRoot $Transaction};return Recover-RollbackTransaction $CodexRoot $Transaction}finally{$env:CODEX_PROVIDER_COMPAT_TEST_FAIL_STAGE=$oldFail;$env:CODEX_PROVIDER_COMPAT_TEST_CRASH_STAGE=$oldCrash}}
+function Recover-Transaction([string]$CodexRoot,$Transaction,[bool]$PreferRestore=$false){$oldFail=$env:CODEX_PROVIDER_COMPAT_TEST_FAIL_STAGE;$oldCrash=$env:CODEX_PROVIDER_COMPAT_TEST_CRASH_STAGE;$oldPause=$env:CODEX_PROVIDER_COMPAT_TEST_PAUSE_STAGE;$env:CODEX_PROVIDER_COMPAT_TEST_FAIL_STAGE=$null;$env:CODEX_PROVIDER_COMPAT_TEST_CRASH_STAGE=$null;$env:CODEX_PROVIDER_COMPAT_TEST_PAUSE_STAGE=$null;try{Remove-TransactionAtomicTemps $CodexRoot $Transaction;if($Transaction.operation -eq 'apply'){return Recover-ApplyTransaction $CodexRoot $Transaction $PreferRestore};return Recover-RollbackTransaction $CodexRoot $Transaction $PreferRestore}finally{$env:CODEX_PROVIDER_COMPAT_TEST_FAIL_STAGE=$oldFail;$env:CODEX_PROVIDER_COMPAT_TEST_CRASH_STAGE=$oldCrash;$env:CODEX_PROVIDER_COMPAT_TEST_PAUSE_STAGE=$oldPause}}
 
 function Invoke-PendingRecovery([string]$CodexRoot){$probe=Read-Transaction $CodexRoot;if(-not $probe){return};Write-Warn "recovering interrupted $($probe.operation) transaction";$lock=$null;try{$lock=Acquire-Lock $CodexRoot ([string]$probe.nonce);$transaction=Read-Transaction $CodexRoot;if($transaction){if(-not([string]$transaction.nonce).Equals([string]$lock.Nonce,[StringComparison]::Ordinal)){throw 'recovery lock nonce does not match the transaction journal'};$result=Recover-Transaction $CodexRoot $transaction;Write-Info "transaction_recovery=$result"}}finally{Release-Lock $lock}}
 
@@ -927,9 +1009,10 @@ function Invoke-Apply($Options,[string]$CodexRoot){
     if($Options.DryRun){Write-Info 'result=dry-run (zero writes)';return $script:ExitSuccess}
     for($attempt=0;$attempt-lt2;$attempt++){
         if(-not(Confirm-Write $Options 'Apply responses-lite-standard-tools?')){Write-Info 'cancelled';return $script:ExitError};Invoke-TestConfigMutation $configPath
-        $lock=$null
+        $lock=$null;$interruptScope=$false;$transaction=$null;$commitPointReached=$false
         try{
-            if(-not(Test-Path -LiteralPath $CodexRoot)){[IO.Directory]::CreateDirectory($CodexRoot)|Out-Null};Assert-CodexHomeSafe $CodexRoot|Out-Null;$lock=Acquire-Lock $CodexRoot
+            $interruptScope=Enter-OperationInterruptScope
+            if(-not(Test-Path -LiteralPath $CodexRoot)){[IO.Directory]::CreateDirectory($CodexRoot)|Out-Null};Assert-CodexHomeSafe $CodexRoot|Out-Null;$lock=Acquire-Lock $CodexRoot;Assert-OperationNotCancelled
             if(Read-Transaction $CodexRoot){throw 'another transaction appeared while acquiring the lock'}
             $stateNow=Read-State $CodexRoot;if($stateNow){$health=Test-StateHealth $CodexRoot $stateNow $version;if($health.Count-eq0){Write-Info 'result=already-applied';return $script:ExitSuccess};throw 'patch state appeared while waiting for the lock'}
             $current=Get-ConfigAnalysis $configPath;$fingerprint=if($current.Exists){$current.Sha256}else{'<missing>'}
@@ -948,13 +1031,15 @@ function Invoke-Apply($Options,[string]$CodexRoot){
             if($env:CODEX_PROVIDER_COMPAT_TEST_MUTATE_CONFIG_BEFORE_WRITE){[IO.File]::AppendAllText($configPath,"# late-external-change`r`n",(New-Object Text.UTF8Encoding($false)))}
             $immediateConfigHash=Get-Sha256 $configPath;if(($plan.Analysis.Exists-and$immediateConfigHash-ne$plan.Analysis.Sha256)-or(-not$plan.Analysis.Exists-and$immediateConfigHash)){throw 'config.toml changed immediately before the atomic write'}
             Invoke-TestFault 'config-write';Write-AtomicBytes $CodexRoot $configPath $plan.AfterBytes $nonce;if(-not$plan.Analysis.Exists){Set-PrivateFileAcl $configPath};if((Get-Sha256 $configPath)-ne(Get-BytesSha256 $plan.AfterBytes)){throw 'config hash verification failed'};if($plan.Analysis.Exists-and$plan.Analysis.Acl-and-not(Test-PathAclMatchesSddl $configPath $plan.Analysis.Acl)){throw 'config permissions changed unexpectedly'};$check=Get-ConfigAnalysis $configPath;Assert-NoDuplicateOwnedKeys $check;if($check.Keys.model_catalog_json.Count-ne1-or-not([string]$check.Keys.model_catalog_json[0].Value).Replace('\','/').Equals($generatedPath.Replace('\','/'),[StringComparison]::OrdinalIgnoreCase)){throw 'config verification failed'};if($Options.EnableWebSearch-and($check.Keys.web_search.Count-ne1-or$check.Keys.web_search[0].Value-ne'live')){throw 'web_search config verification failed'};Set-TransactionPhase $CodexRoot $transaction 'config-written';Invoke-TestFault 'after-config'
-            Invoke-TestFault 'state-write';Write-AtomicBytes $CodexRoot $transaction.paths.state $stateBytes $nonce;Read-State $CodexRoot|Out-Null;Set-TransactionPhase $CodexRoot $transaction 'state-written';Invoke-TestFault 'after-state'
+            Invoke-TestFault 'state-write';Write-AtomicBytes $CodexRoot $transaction.paths.state $stateBytes $nonce;Read-State $CodexRoot|Out-Null;Set-TransactionPhase $CodexRoot $transaction 'state-written';Invoke-TestFault 'after-state';Assert-OperationNotCancelled;$commitPointReached=$true;Invoke-TestFault 'apply-committed-before-cleanup'
             Remove-VerifiedOwnedFile $CodexRoot (Get-TransactionPath $CodexRoot) $null;Write-Info 'result=applied';Write-Info '完全退出并重新启动 Codex，然后新建任务/新 thread。';Write-Info '旧任务保留启动时的模型与工具快照，不会自动应用本次更改。';return $script:ExitSuccess
         }catch{
-            $message=$_.Exception.Message
-            try{$transaction=Read-Transaction $CodexRoot;if($transaction){$recovery=Recover-Transaction $CodexRoot $transaction;if($recovery-eq'committed'){Write-Warn "apply completed during recovery after: $message";Write-Info 'result=applied';Write-Info '完全退出并重新启动 Codex，然后新建任务/新 thread。';Write-Info '旧任务保留启动时的模型与工具快照，不会自动应用本次更改。';return $script:ExitSuccess}}}catch{Write-Warn "automatic transaction recovery failed: $($_.Exception.Message)"}
+            $message=$_.Exception.Message;$wasInterrupted=[ProviderCompatNative]::CancellationRequested;$recovery=$null;$transaction=$null
+            $preferRestore=$wasInterrupted-and-not$commitPointReached
+            try{$transaction=Read-Transaction $CodexRoot;if($transaction){$recovery=Recover-Transaction $CodexRoot $transaction $preferRestore;if($recovery-eq'committed'){Write-Warn "apply completed during recovery after: $message";Write-Info 'result=applied';Write-Info '完全退出并重新启动 Codex，然后新建任务/新 thread。';Write-Info '旧任务保留启动时的模型与工具快照，不会自动应用本次更改。';return $script:ExitSuccess}}}catch{Write-Warn "automatic transaction recovery failed: $($_.Exception.Message)"}
+            if($wasInterrupted){if($recovery-eq'restored'-or-not$transaction){Write-Info 'result=interrupted-restored'};Write-Warn "apply interrupted safely: $message";return $script:ExitUnsafe}
             if($attempt-eq0-and$message-like'config.toml changed after confirmation*'){continue};Write-Warn "apply failed safely: $message";return $script:ExitUnsafe
-        }finally{Release-Lock $lock}
+        }finally{Release-Lock $lock;if($interruptScope){Exit-OperationInterruptScope}}
     }
     return $script:ExitUnsafe
 }
@@ -978,9 +1063,10 @@ function Invoke-Rollback($Options,[string]$CodexRoot){
     try{$analysis=Get-ConfigAnalysis $configPath;Assert-NoDuplicateOwnedKeys $analysis;$generated=[string]$state.generated_catalog.path;if($analysis.Keys.model_catalog_json.Count-ne1-or-not([string]$analysis.Keys.model_catalog_json[0].Value).Replace('\','/').Equals($generated.Replace('\','/'),[StringComparison]::OrdinalIgnoreCase)){throw 'model_catalog_json drifted after apply; refusing to overwrite it'};if($state.config.web_search_modified-eq$true-and($analysis.Keys.web_search.Count-ne1-or$analysis.Keys.web_search[0].Value-ne'live')){throw 'web_search drifted after apply; refusing to overwrite it'};$text=Get-RollbackText $state $analysis;$deleteConfig=(-not[bool]$state.config.existed)-and[string]::IsNullOrWhiteSpace($text);$afterBytes=if($deleteConfig){$null}else{ConvertTo-Utf8Bytes $text ([bool]$state.config.had_bom)}}catch{Write-Warn $_.Exception.Message;return $script:ExitUnsafe}
     Write-Info "plan: restore tool-owned keys in $configPath";if($Options.DryRun){Write-Info 'result=dry-run (zero writes)';return $script:ExitSuccess}
     for($attempt=0;$attempt-lt2;$attempt++){
-        if(-not(Confirm-Write $Options 'Rollback responses-lite-standard-tools?')){Write-Info 'cancelled';return $script:ExitError};Invoke-TestConfigMutation $configPath;$lock=$null
+        if(-not(Confirm-Write $Options 'Rollback responses-lite-standard-tools?')){Write-Info 'cancelled';return $script:ExitError};Invoke-TestConfigMutation $configPath;$lock=$null;$interruptScope=$false;$transaction=$null;$commitPointReached=$false
         try{
-            $lock=Acquire-Lock $CodexRoot;if(Read-Transaction $CodexRoot){throw 'another transaction appeared while acquiring the lock'};$currentState=Read-State $CodexRoot;if(-not$currentState-or(Get-Sha256 $statePath)-ne$stateHash){throw 'state changed while waiting for the lock'};$current=Get-ConfigAnalysis $configPath
+            $interruptScope=Enter-OperationInterruptScope
+            $lock=Acquire-Lock $CodexRoot;Assert-OperationNotCancelled;if(Read-Transaction $CodexRoot){throw 'another transaction appeared while acquiring the lock'};$currentState=Read-State $CodexRoot;if(-not$currentState-or(Get-Sha256 $statePath)-ne$stateHash){throw 'state changed while waiting for the lock'};$current=Get-ConfigAnalysis $configPath
             if($current.Sha256-ne$analysis.Sha256){if($attempt-eq0){Write-Warn 'config.toml changed after confirmation; rebuilding the rollback plan once';$analysis=$current;Assert-NoDuplicateOwnedKeys $analysis;if($analysis.Keys.model_catalog_json.Count-ne1-or-not([string]$analysis.Keys.model_catalog_json[0].Value).Replace('\','/').Equals($generated.Replace('\','/'),[StringComparison]::OrdinalIgnoreCase)){throw 'model_catalog_json drifted during confirmation'};$text=Get-RollbackText $state $analysis;$deleteConfig=(-not[bool]$state.config.existed)-and[string]::IsNullOrWhiteSpace($text);$afterBytes=if($deleteConfig){$null}else{ConvertTo-Utf8Bytes $text ([bool]$state.config.had_bom)};continue};throw 'config.toml changed repeatedly while rolling back'}
             if((Get-Item -LiteralPath $configPath -Force).Attributes -band [IO.FileAttributes]::ReadOnly){throw 'config.toml is read-only'}
             $nonce=[string]$lock.Nonce;Assert-OperationNonce $nonce 'operation lock nonce';$snapshot=Join-Path $CodexRoot ".provider-compat-rollback-$nonce.config";$pending="$generated.rollback-pending-$nonce";$stamp=Get-Date -Format 'yyyyMMdd-HHmmss';$archive=Get-UniquePath(Join-Path $CodexRoot "provider-compat-state.json.rolled-back-$stamp");$cacheOriginal=$state.cache.original_path;$cacheBackup=$state.cache.backup_path;$catalogHash=if(Test-Path -LiteralPath $generated){Get-Sha256 $generated}else{$null};$catalogShouldMove=$false
@@ -1005,16 +1091,17 @@ function Invoke-Rollback($Options,[string]$CodexRoot){
             Set-TransactionPhase $CodexRoot $transaction 'config-written';Invoke-TestFault 'rollback-after-config'
             [IO.File]::Move($statePath,$archive)
             if((Test-Path -LiteralPath $statePath) -or -not(Test-Path -LiteralPath $archive) -or (Get-Sha256 $archive)-ne$stateHash){throw 'rollback state archive verification failed'}
-            Set-TransactionPhase $CodexRoot $transaction 'state-archived';Invoke-TestFault 'rollback-after-state'
+            Set-TransactionPhase $CodexRoot $transaction 'state-archived';Invoke-TestFault 'rollback-after-state';Assert-OperationNotCancelled;$commitPointReached=$true;Invoke-TestFault 'rollback-committed-before-cleanup'
             if(Test-Path -LiteralPath $pending){Remove-VerifiedOwnedFile $CodexRoot $pending ([string]$state.generated_catalog.sha256)}
+            Invoke-TestFault 'rollback-after-pending-cleanup'
             Remove-VerifiedOwnedFile $CodexRoot $snapshot $analysis.Sha256;Remove-VerifiedOwnedFile $CodexRoot (Get-TransactionPath $CodexRoot) $null
             $transactionStillExists=Test-Path -LiteralPath (Get-TransactionPath $CodexRoot)
             $catalogStillExists=$catalogShouldMove -and ((Test-Path -LiteralPath $generated) -or (Test-Path -LiteralPath $pending))
             if((Test-Path -LiteralPath $statePath) -or $transactionStillExists -or (Test-Path -LiteralPath $snapshot) -or $catalogStillExists){throw 'rollback final-state verification failed'}
             Write-Info 'result=rolled-back';Write-Info '完全退出并重新启动 Codex，然后新建任务/新 thread。';Write-Info '旧任务保留启动时的模型与工具快照，不会自动应用本次更改。';return $script:ExitSuccess
         }catch{
-            $message=$_.Exception.Message;try{$transaction=Read-Transaction $CodexRoot;if($transaction){$recovery=Recover-Transaction $CodexRoot $transaction;if($recovery-eq'committed'){Write-Warn "rollback completed during recovery after: $message";Write-Info 'result=rolled-back';Write-Info '完全退出并重新启动 Codex，然后新建任务/新 thread。';Write-Info '旧任务保留启动时的模型与工具快照，不会自动应用本次更改。';return $script:ExitSuccess}}}catch{Write-Warn "automatic transaction recovery failed: $($_.Exception.Message)"};if($attempt-eq0-and$message-like'config.toml changed after confirmation*'){continue};Write-Warn "rollback failed safely: $message";return $script:ExitUnsafe
-        }finally{Release-Lock $lock}
+            $message=$_.Exception.Message;$wasInterrupted=[ProviderCompatNative]::CancellationRequested;$recovery=$null;$transaction=$null;$preferRestore=$wasInterrupted-and-not$commitPointReached;try{$transaction=Read-Transaction $CodexRoot;if($transaction){$recovery=Recover-Transaction $CodexRoot $transaction $preferRestore;if($recovery-eq'committed'){Write-Warn "rollback completed during recovery after: $message";Write-Info 'result=rolled-back';Write-Info '完全退出并重新启动 Codex，然后新建任务/新 thread。';Write-Info '旧任务保留启动时的模型与工具快照，不会自动应用本次更改。';return $script:ExitSuccess}}}catch{Write-Warn "automatic transaction recovery failed: $($_.Exception.Message)"};if($wasInterrupted){if($recovery-eq'restored'-or-not$transaction){Write-Info 'result=interrupted-restored'};Write-Warn "rollback interrupted safely: $message";return $script:ExitUnsafe};if($attempt-eq0-and$message-like'config.toml changed after confirmation*'){continue};Write-Warn "rollback failed safely: $message";return $script:ExitUnsafe
+        }finally{Release-Lock $lock;if($interruptScope){Exit-OperationInterruptScope}}
     }
     return $script:ExitUnsafe
 }

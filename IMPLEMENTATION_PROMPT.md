@@ -102,10 +102,14 @@ codex-provider-compat.ps1
 codex-provider-compat.sh
 LICENSE
 THIRD_PARTY_NOTICES.md
+scripts/build-release.ps1
 tests/fixtures/*
 tests/test-windows.ps1
+tests/test-request-shape-windows.ps1
+tests/test-release-package.ps1
 tests/test-macos.sh
 .github/workflows/test.yml
+.github/workflows/package-release.yml
 ```
 
 除非经过证据证明绝对必要，不要引入 Python package、Node package、Go module、Rust crate、Docker、数据库、Web UI 或服务端。
@@ -121,7 +125,7 @@ Windows：
 macOS：
 
 - 使用一个 shell 脚本。
-- 只依赖系统自带 shell、`curl`、`awk`、`shasum` 和 `osascript -l JavaScript`。
+- 只依赖 macOS 自带的 shell 和系统工具，包括 `curl`、`awk`、`shasum` 与 `osascript -l JavaScript`。
 - 不假设 Python 3、Node、Homebrew、`jq` 或 GNU 工具存在。
 
 两个脚本必须拥有相同的状态文件 schema、相同的命令、相同的核心安全语义和尽可能一致的输出。
@@ -237,7 +241,7 @@ web_search = "live"
 
 写入 `$CODEX_HOME/provider-compat-state.json`，记录 `patch_id = responses-lite-standard-tools`、补丁版本、Codex 版本、catalog 来源与哈希、生成文件哈希、config 原值和备份、cache 备份及时间。禁止记录 secret、完整 config 或 API 请求。
 
-另写 schema 1 的 `$CODEX_HOME/provider-compat-transaction.json`。apply/rollback 在第一次状态变更前记录 operation、phase、nonce、固定路径和必要哈希；每个阶段原子推进。失败或 SIGINT/SIGTERM 时恢复，SIGKILL/断电遗留由 doctor/status 只读报告为 `recovery-required`，下一次 mutating command 加锁后自动恢复。日志不得包含完整 config 或秘密。
+另写 schema 1 的 `$CODEX_HOME/provider-compat-transaction.json`。apply/rollback 在第一次状态变更前记录 operation、phase、nonce、固定路径和必要哈希；每个阶段原子推进。失败或 SIGINT/SIGTERM 发生在提交点前时恢复到操作前状态；最终 state 已验证并进入不可逆清理提交点后，应安全完成已提交结果，不能使用已删除的 pending/snapshot 强行反向恢复。SIGKILL/断电遗留由 doctor/status 只读报告为 `recovery-required`，下一次 mutating command 加锁后自动恢复。日志不得包含完整 config 或秘密。
 
 #### 8. 幂等
 
@@ -380,7 +384,7 @@ apply 和 rollback 最后必须明确输出：
 
 ### 十、文档要求
 
-完成中英文 README，面向普通用户而不是只面向开发者。必须详细解释：
+完成中英文 README，面向普通用户而不是只面向开发者。正文严格收敛为两个一级部分：“如何使用”和“工作原理”。必须清楚解释：
 
 - 症状；
 - 根因；
@@ -391,7 +395,7 @@ apply 和 rollback 最后必须明确输出：
 - 普通用户只需运行脚本、重启并新建任务；
 - 用户无需研究 provider、抓包、调用 API 或手工替换文件；
 - 为什么仓库定位是 provider/Responses 兼容，而不是 Web Search 单点修复；
-- 首个补丁 ID 和未来补丁扩展边界；
+- 首个补丁 ID 和补丁边界；
 - 适用与不适用条件；
 - Windows 和 macOS 步骤；
 - 所有修改文件；
@@ -404,7 +408,9 @@ apply 和 rollback 最后必须明确输出：
 - 官方修复后的卸载方法；
 - 非官方声明、隐私和许可证。
 
-首次公开源码交付的主要安装路径应指向 <https://github.com/Hyacehila/codex-provider-compat>，让用户选择经 Actions 验证的固定 commit，下载该 commit 的 ZIP 或 clone 后 checkout 到它，验证脚本 SHA-256、查看脚本后再执行。只有未来真正发布带稳定产物和校验和的 GitHub Release 后，README 才可把 Release 改为主要安装入口。不要只提供不透明的一键管道命令。
+正式 v0.1.0 的主要安装路径应指向 GitHub Release。发布资产必须包含 `codex-provider-compat-v0.1.0-windows.zip`、`codex-provider-compat-v0.1.0-macos.zip`、`codex-provider-compat.ps1`、`codex-provider-compat.sh` 和 `SHA256SUMS.txt`。README 先让用户下载平台 ZIP 和校验和、验证 SHA-256、查看脚本，再本地运行；不要只提供不透明的一键管道命令。
+
+README 不记录固定 case 数、历史连续通过轮次、冗长上游 Issue 清单或开发过程。必须保留非官方声明、适用与不适用条件、完整 catalog 风险、整个请求形态变化、provider 能力前提、搜索计费、重启新任务、Codex 更新、rollback、隐私、许可证及验证范围。mock、fixture、CI 和真实 provider 测试必须区分；缺少设备、真实 provider 或明确可计费账号的人工项目标记为 `not-run`，不能为了发布读取用户凭据或虚构结果。
 
 ### 十一、GitHub Actions 和发布准备
 

@@ -9,6 +9,175 @@ $script:TempRoots = New-Object Collections.ArrayList
 $script:TestTempParent = [IO.Path]::GetFullPath((Join-Path $repo '.test-tmp'))
 $script:TestTempBase = [IO.Path]::GetFullPath((Join-Path $script:TestTempParent ("w-$PID-"+[guid]::NewGuid().ToString('N').Substring(0,8))))
 
+if (-not ('ProviderCompatWindowsTestNative' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class ProviderCompatWindowsTestNative {
+    private const uint CREATE_NEW_PROCESS_GROUP = 0x00000200;
+    private const uint CTRL_BREAK_EVENT = 1;
+    private const uint WAIT_OBJECT_0 = 0;
+    private const uint WAIT_TIMEOUT = 258;
+    private static readonly Dictionary<uint, IntPtr> processHandles = new Dictionary<uint, IntPtr>();
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO {
+        public uint cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public uint dwX;
+        public uint dwY;
+        public uint dwXSize;
+        public uint dwYSize;
+        public uint dwXCountChars;
+        public uint dwYCountChars;
+        public uint dwFillAttribute;
+        public uint dwFlags;
+        public short wShowWindow;
+        public short cbReserved2;
+        public IntPtr lpReserved2;
+        public IntPtr hStdInput;
+        public IntPtr hStdOutput;
+        public IntPtr hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION {
+        public IntPtr hProcess;
+        public IntPtr hThread;
+        public uint dwProcessId;
+        public uint dwThreadId;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool CreateProcess(
+        string applicationName,
+        StringBuilder commandLine,
+        IntPtr processAttributes,
+        IntPtr threadAttributes,
+        bool inheritHandles,
+        uint creationFlags,
+        IntPtr environment,
+        string currentDirectory,
+        ref STARTUPINFO startupInfo,
+        out PROCESS_INFORMATION processInformation);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GenerateConsoleCtrlEvent(uint controlEvent, uint processGroupId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint GetConsoleProcessList([Out] uint[] processList, uint processCount);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AllocConsole();
+
+    public static void EnsureConsole() {
+        uint[] processList = new uint[1];
+        if (GetConsoleProcessList(processList, 1) != 0) {
+            return;
+        }
+        if (!AllocConsole()) {
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "could not allocate a console for the control-event test");
+        }
+    }
+
+    public static uint StartProcessGroup(string applicationName, string commandLine, string currentDirectory) {
+        STARTUPINFO startupInfo = new STARTUPINFO();
+        startupInfo.cb = (uint)Marshal.SizeOf(typeof(STARTUPINFO));
+        PROCESS_INFORMATION processInformation;
+        StringBuilder mutableCommandLine = new StringBuilder(commandLine);
+        if (!CreateProcess(applicationName, mutableCommandLine, IntPtr.Zero, IntPtr.Zero, false, CREATE_NEW_PROCESS_GROUP, IntPtr.Zero, currentDirectory, ref startupInfo, out processInformation)) {
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "could not start the interrupt-test child process");
+        }
+        CloseHandle(processInformation.hThread);
+        lock (processHandles) {
+            processHandles.Add(processInformation.dwProcessId, processInformation.hProcess);
+            return processInformation.dwProcessId;
+        }
+    }
+
+    public static void SendBreak(uint processGroupId) {
+        if (!GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, processGroupId)) {
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "could not send CTRL_BREAK_EVENT to the child process group");
+        }
+    }
+
+    private static IntPtr GetProcessHandle(uint processId) {
+        lock (processHandles) {
+            IntPtr process;
+            if (!processHandles.TryGetValue(processId, out process)) {
+                throw new InvalidOperationException("the interrupt-test child process handle is not available");
+            }
+            return process;
+        }
+    }
+
+    public static bool IsRunning(uint processId) {
+        uint result = WaitForSingleObject(GetProcessHandle(processId), 0);
+        if (result == WAIT_TIMEOUT) {
+            return true;
+        }
+        if (result == WAIT_OBJECT_0) {
+            return false;
+        }
+        throw new Win32Exception(Marshal.GetLastWin32Error(), "could not inspect the interrupt-test child process");
+    }
+
+    public static int WaitForExit(uint processId, uint milliseconds) {
+        IntPtr process = GetProcessHandle(processId);
+        uint result = WaitForSingleObject(process, milliseconds);
+        if (result == WAIT_TIMEOUT) {
+            return Int32.MinValue;
+        }
+        if (result != WAIT_OBJECT_0) {
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "could not wait for the interrupt-test child process");
+        }
+        uint exitCode;
+        if (!GetExitCodeProcess(process, out exitCode)) {
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "could not read the interrupt-test child exit code");
+        }
+        return unchecked((int)exitCode);
+    }
+
+    public static void Terminate(uint processId) {
+        IntPtr process = GetProcessHandle(processId);
+        if (IsRunning(processId) && !TerminateProcess(process, 92)) {
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "could not terminate the interrupt-test child process");
+        }
+    }
+
+    public static void CloseProcess(uint processId) {
+        IntPtr process = IntPtr.Zero;
+        lock (processHandles) {
+            if (processHandles.TryGetValue(processId, out process)) {
+                processHandles.Remove(processId);
+            }
+        }
+        if (process != IntPtr.Zero) {
+            CloseHandle(process);
+        }
+    }
+}
+'@
+}
+
 $repoFull = [IO.Path]::GetFullPath($repo).TrimEnd('\','/')
 $expectedTestParent = [IO.Path]::GetFullPath((Join-Path $repoFull '.test-tmp')).TrimEnd('\','/')
 $userProfileFull = [IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd('\','/')
@@ -58,6 +227,47 @@ function Invoke-Tool([string[]]$Arguments, [hashtable]$Environment = @{}, [bool]
         return [pscustomobject]@{ ExitCode=$LASTEXITCODE; Output=$output }
     } finally {
         foreach ($key in $effective.Keys) { [Environment]::SetEnvironmentVariable($key,$old[$key],'Process') }
+    }
+}
+
+function ConvertTo-NativeCommandLineArgument([string]$Value) {
+    if ($Value.Contains('"')) { throw 'the native test launcher does not accept arguments containing a quote' }
+    if ($Value.EndsWith('\')) { throw 'the native test launcher does not accept arguments ending in a backslash' }
+    if ($Value.Length -eq 0 -or $Value -match '\s') { return '"' + $Value + '"' }
+    return $Value
+}
+
+function Invoke-ToolWithConsoleInterrupt([string[]]$Arguments,[string]$PauseStage,[string]$ExpectedPhase) {
+    [ProviderCompatWindowsTestNative]::EnsureConsole()
+    $eventName='Local\CodexProviderCompatTest-'+[guid]::NewGuid().ToString('N');$eventCreated=$false;$readyEvent=New-Object Threading.EventWaitHandle($false,[Threading.EventResetMode]::ManualReset,$eventName,[ref]$eventCreated)
+    $effective=@{
+        CODEX_PROVIDER_COMPAT_TEST_VERSIONS='cli=0.144.1'
+        CODEX_PROVIDER_COMPAT_INTERNAL_TEST_CONFIRM='I-understand-this-is-test-only'
+        CODEX_PROVIDER_COMPAT_TEST_PAUSE_STAGE=$PauseStage
+        CODEX_PROVIDER_COMPAT_TEST_PAUSE_EVENT=$eventName
+    }
+    $old=@{}
+    foreach($key in $effective.Keys){$old[$key]=[Environment]::GetEnvironmentVariable($key,'Process');[Environment]::SetEnvironmentVariable($key,[string]$effective[$key],'Process')}
+    [uint32]$childId=0
+    try{
+        $nativeArgs=@($powershellExe,'-NoLogo','-NoProfile','-File',$scriptPath)+$Arguments
+        $commandLine=(@($nativeArgs|ForEach-Object{ConvertTo-NativeCommandLineArgument ([string]$_)})-join' ')
+        $childId=[ProviderCompatWindowsTestNative]::StartProcessGroup($powershellExe,$commandLine,$repo)
+    }finally{
+        foreach($key in $effective.Keys){[Environment]::SetEnvironmentVariable($key,$old[$key],'Process')}
+    }
+    try{
+        $CodexRoot=$Arguments[[Array]::IndexOf($Arguments,'--codex-home')+1]
+        $transactionPath=Join-Path $CodexRoot 'provider-compat-transaction.json'
+        if(-not$readyEvent.WaitOne(20000)){if(-not[ProviderCompatWindowsTestNative]::IsRunning($childId)){$earlyExit=[ProviderCompatWindowsTestNative]::WaitForExit($childId,0);throw "interrupt-test child exited before reaching $PauseStage (exit=$earlyExit)"};throw "interrupt-test child did not reach $PauseStage"}
+        if(-not(Test-Path -LiteralPath $transactionPath -PathType Leaf)){throw "interrupt-test transaction is missing at $PauseStage"};$transaction=[IO.File]::ReadAllText($transactionPath,[Text.Encoding]::UTF8)|ConvertFrom-Json;if([string]$transaction.phase-ne$ExpectedPhase){throw "interrupt-test phase mismatch at $PauseStage (expected=$ExpectedPhase actual=$($transaction.phase))"}
+        [ProviderCompatWindowsTestNative]::SendBreak($childId)
+        $exitCode=[ProviderCompatWindowsTestNative]::WaitForExit($childId,20000)
+        if($exitCode-eq[int]::MinValue){try{[ProviderCompatWindowsTestNative]::Terminate($childId)}catch{};throw "interrupt-test child did not exit after $PauseStage"}
+        return $exitCode
+    }finally{
+        if($childId-ne0){try{if([ProviderCompatWindowsTestNative]::IsRunning($childId)){[ProviderCompatWindowsTestNative]::Terminate($childId);[ProviderCompatWindowsTestNative]::WaitForExit($childId,5000)|Out-Null}}catch{};[ProviderCompatWindowsTestNative]::CloseProcess($childId)}
+        $readyEvent.Dispose()
     }
 }
 
@@ -296,6 +506,20 @@ Test-Case 'caught rollback faults restore the applied state; post-archive fault 
 
 Test-Case 'hard-terminated rollback is recovered and then completed' {
     $CodexRoot=New-TestHome 'rollback-crash';$configPath=Join-Path $CodexRoot 'config.toml';Copy-Fixture 'config-basic.toml' $configPath;Set-TestPrivateAcl $configPath;Write-Utf8 (Join-Path $CodexRoot 'models_cache.json') 'cache';Assert-Equal 0 (Invoke-Tool (Apply-Args $CodexRoot)).ExitCode 'apply';$crash=Invoke-Tool (Rollback-Args $CodexRoot) @{CODEX_PROVIDER_COMPAT_TEST_CRASH_STAGE='rollback-after-config'};Assert-Equal 91 $crash.ExitCode $crash.Output;$transaction=[IO.File]::ReadAllText((Join-Path $CodexRoot 'provider-compat-transaction.json'),[Text.Encoding]::UTF8)|ConvertFrom-Json;Assert-True (Test-Path -LiteralPath $transaction.paths.config_snapshot) 'rollback snapshot missing after crash';Assert-Equal (Get-Acl -LiteralPath $configPath).Sddl (Get-Acl -LiteralPath $transaction.paths.config_snapshot).Sddl 'rollback snapshot ACL differs from config';Assert-Equal 3 (Invoke-Tool (Status-Args $CodexRoot)).ExitCode 'status should require recovery';$retry=Invoke-Tool (Rollback-Args $CodexRoot);Assert-Equal 0 $retry.ExitCode $retry.Output;Assert-False (Test-Path -LiteralPath (Join-Path $CodexRoot 'provider-compat-state.json')) 'state remained';Assert-True (Test-Path -LiteralPath (Join-Path $CodexRoot 'models_cache.json')) 'cache not restored';Assert-False (Test-Path -LiteralPath (Join-Path $CodexRoot 'provider-compat-transaction.json')) 'journal remained';Assert-NoAtomicTemps $CodexRoot 'rollback recovery left an atomic temp'
+}
+
+Test-Case 'console control interrupts immediately restore apply and rollback transactions' {
+    $applyHome=New-TestHome 'control-apply';$applyConfig=Join-Path $applyHome 'config.toml';$applyCache=Join-Path $applyHome 'models_cache.json';Copy-Fixture 'config-basic.toml' $applyConfig;Write-Utf8 $applyCache 'cache';$configHash=(Get-FileHash $applyConfig).Hash;$cacheHash=(Get-FileHash $applyCache).Hash
+    $applyExit=Invoke-ToolWithConsoleInterrupt (Apply-Args $applyHome) 'after-state' 'state-written'
+    Assert-Equal 3 $applyExit 'interrupted apply exit code';Assert-Equal $configHash (Get-FileHash $applyConfig).Hash 'interrupted apply changed config';Assert-Equal $cacheHash (Get-FileHash $applyCache).Hash 'interrupted apply changed cache';Assert-False (Test-Path -LiteralPath (Join-Path $applyHome 'provider-compat-state.json')) 'interrupted apply left state';Assert-False (Test-Path -LiteralPath (Join-Path $applyHome 'provider-compat-transaction.json')) 'interrupted apply left transaction';Assert-False (Test-Path -LiteralPath (Join-Path $applyHome 'provider-compat.lock')) 'interrupted apply left lock';Assert-Equal 0 @(Get-ChildItem -LiteralPath (Join-Path $applyHome 'model-catalogs') -File -ErrorAction SilentlyContinue).Count 'interrupted apply left catalog';Assert-NoAtomicTemps $applyHome 'interrupted apply left an atomic temp'
+
+    $rollbackHome=New-TestHome 'control-rollback';$rollbackConfig=Join-Path $rollbackHome 'config.toml';Copy-Fixture 'config-basic.toml' $rollbackConfig;Write-Utf8 (Join-Path $rollbackHome 'models_cache.json') 'cache';Assert-Equal 0 (Invoke-Tool (Apply-Args $rollbackHome)).ExitCode 'interrupt rollback setup apply';$appliedSnapshot=Snapshot-TestRoot $rollbackHome
+    $rollbackExit=Invoke-ToolWithConsoleInterrupt (Rollback-Args $rollbackHome) 'rollback-after-state' 'state-archived'
+    Assert-Equal 3 $rollbackExit 'interrupted rollback exit code';Assert-Equal $appliedSnapshot (Snapshot-TestRoot $rollbackHome) 'interrupted rollback did not restore the applied state';Assert-False (Test-Path -LiteralPath (Join-Path $rollbackHome 'provider-compat-transaction.json')) 'interrupted rollback left transaction';Assert-False (Test-Path -LiteralPath (Join-Path $rollbackHome 'provider-compat.lock')) 'interrupted rollback left lock';Assert-NoAtomicTemps $rollbackHome 'interrupted rollback left an atomic temp';Assert-Equal 0 (Invoke-Tool (Status-Args $rollbackHome)).ExitCode 'interrupted rollback status';Assert-Equal 0 (Invoke-Tool (Rollback-Args $rollbackHome)).ExitCode 'interrupted rollback cleanup'
+
+    $committedHome=New-TestHome 'control-commit';$committedConfig=Join-Path $committedHome 'config.toml';$committedCache=Join-Path $committedHome 'models_cache.json';Copy-Fixture 'config-basic.toml' $committedConfig;Write-Utf8 $committedCache 'cache';$committedConfigHash=(Get-FileHash $committedConfig).Hash;$committedCacheHash=(Get-FileHash $committedCache).Hash;Assert-Equal 0 (Invoke-Tool (Apply-Args $committedHome)).ExitCode 'committed interrupt setup apply'
+    $committedExit=Invoke-ToolWithConsoleInterrupt (Rollback-Args $committedHome) 'rollback-after-pending-cleanup' 'state-archived'
+    Assert-Equal 0 $committedExit 'post-commit interrupt must finish the committed rollback';Assert-Equal $committedConfigHash (Get-FileHash $committedConfig).Hash 'post-commit interrupt did not restore config';Assert-Equal $committedCacheHash (Get-FileHash $committedCache).Hash 'post-commit interrupt did not restore cache';Assert-False (Test-Path -LiteralPath (Join-Path $committedHome 'provider-compat-state.json')) 'post-commit interrupt left state';Assert-False (Test-Path -LiteralPath (Join-Path $committedHome 'provider-compat-transaction.json')) 'post-commit interrupt left transaction';Assert-False (Test-Path -LiteralPath (Join-Path $committedHome 'provider-compat.lock')) 'post-commit interrupt left lock';Assert-Equal 0 @(Get-ChildItem -LiteralPath (Join-Path $committedHome 'model-catalogs') -File -ErrorAction SilentlyContinue).Count 'post-commit interrupt restored a removed catalog';Assert-NoAtomicTemps $committedHome 'post-commit interrupt left an atomic temp'
 }
 
 Test-Case 'tampered state paths cannot touch any file outside home' {

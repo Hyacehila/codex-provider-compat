@@ -2,6 +2,7 @@
 *.log
 .DS_Store
 node_modules/
+/dist/
 test-results/
 tests/.tmp/
 .test-tmp/

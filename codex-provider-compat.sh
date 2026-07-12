@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 codex-provider-compat contributors
 
 set -u
 umask 077
