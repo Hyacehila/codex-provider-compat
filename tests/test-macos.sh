@@ -819,8 +819,9 @@ t_signal_and_crash_recovery() {
   h=$NEW_HOME
   /bin/cp "$FIXTURES/config-basic.toml" "$h/config.toml"
   printf cache > "$h/models_cache.json"
-  /bin/mkdir "$h/script-tmp"
-  /usr/bin/env TMPDIR="$h/script-tmp" CODEX_PROVIDER_COMPAT_TEST_CRASH_STAGE=after-catalog /bin/sh "$TOOL" apply --yes --codex-home "$h" --codex-version 0.144.1 --catalog-file "$FIXTURES/models-valid.json" > "$RUN_OUT" 2>&1
+  crash_tmp="$SUITE_ROOT/script tmp 中文"
+  /bin/mkdir "$crash_tmp"
+  /usr/bin/env TMPDIR="$crash_tmp/" CODEX_PROVIDER_COMPAT_TEST_CRASH_STAGE=after-catalog /bin/sh "$TOOL" apply --yes --codex-home "$h" --codex-version 0.144.1 --catalog-file "$FIXTURES/models-valid.json" > "$RUN_OUT" 2>&1
   RUN_CODE=$?
   assert_eq 137 "$RUN_CODE" crash || return 1
   assert_file "$h/provider-compat-transaction.json" || return 1
@@ -888,6 +889,39 @@ t_signal_and_crash_recovery() {
   rollback_default "$h"
   assert_eq 0 "$RUN_CODE" snapshot-recovered-rollback || return 1
   assert_no_atomic_temps "$h"
+}
+
+t_tmpdir_safety() {
+  new_home 'tmpdir inside home'
+  h=$NEW_HOME
+  /bin/cp "$FIXTURES/config-basic.toml" "$h/config.toml"
+  original=$(hash_file "$h/config.toml")
+  inside_tmp="$h/temporary files"
+  /bin/mkdir "$inside_tmp"
+  run_tool_env TMPDIR "$inside_tmp/" doctor --codex-home "$h" --codex-version 0.144.1 --catalog-file "$FIXTURES/models-valid.json"
+  assert_eq 3 "$RUN_CODE" tmpdir-inside-home || return 1
+  [ "$(hash_file "$h/config.toml")" = "$original" ] || return 1
+  ! /usr/bin/find "$inside_tmp" -mindepth 1 -print | /usr/bin/grep . >/dev/null || return 1
+  inside_tmp_link="$SUITE_ROOT/tmpdir-inside-link"
+  /bin/ln -s "$inside_tmp" "$inside_tmp_link"
+  run_tool_env TMPDIR "$inside_tmp_link/" doctor --codex-home "$h" --codex-version 0.144.1 --catalog-file "$FIXTURES/models-valid.json"
+  assert_eq 3 "$RUN_CODE" tmpdir-symlink-inside-home || return 1
+  ! /usr/bin/find "$inside_tmp" -mindepth 1 -print | /usr/bin/grep . >/dev/null || return 1
+
+  new_home 'tmpdir external home'
+  h=$NEW_HOME
+  /bin/cp "$FIXTURES/config-basic.toml" "$h/config.toml"
+  external_tmp="$SUITE_ROOT/external tmp 中文"
+  /bin/mkdir "$external_tmp"
+  run_tool_env TMPDIR "$external_tmp/" apply --yes --codex-home "$h" --codex-version 0.144.1 --catalog-file "$FIXTURES/models-valid.json"
+  assert_eq 0 "$RUN_CODE" tmpdir-external-apply || return 1
+  ! /usr/bin/find "$external_tmp" -mindepth 1 -print | /usr/bin/grep . >/dev/null || return 1
+  run_tool_env TMPDIR "$external_tmp/" status --codex-home "$h" --codex-version 0.144.1
+  assert_eq 0 "$RUN_CODE" tmpdir-external-status || return 1
+  ! /usr/bin/find "$external_tmp" -mindepth 1 -print | /usr/bin/grep . >/dev/null || return 1
+  run_tool_env TMPDIR "$external_tmp/" rollback --yes --codex-home "$h"
+  assert_eq 0 "$RUN_CODE" tmpdir-external-rollback || return 1
+  ! /usr/bin/find "$external_tmp" -mindepth 1 -print | /usr/bin/grep . >/dev/null
 }
 
 t_crash_cache_conflict() {
@@ -1250,6 +1284,7 @@ case_run state-transaction-tamper t_state_and_transaction_tamper
 case_run apply-fault-recovery t_apply_fault_recovery
 case_run rollback-fault-recovery t_rollback_fault_recovery
 case_run signal-crash-recovery t_signal_and_crash_recovery
+case_run tmpdir-safety t_tmpdir_safety
 case_run crash-cache-conflict t_crash_cache_conflict
 case_run toctou t_toctou
 case_run late-transaction-config-race t_late_transaction_config_race

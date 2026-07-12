@@ -5,7 +5,7 @@
 set -u
 umask 077
 
-TOOL_VERSION=0.1.0
+TOOL_VERSION=0.1.1
 PATCH_ID=responses-lite-standard-tools
 MAX_CATALOG_BYTES=5242880
 MIN_CATALOG_MODELS=8
@@ -22,7 +22,7 @@ info() { printf '%s\n' "[provider-compat] $*"; }
 warn() { printf '%s\n' "[provider-compat] WARNING: $*" >&2; }
 
 TMP_BASE=${TMPDIR:-/tmp}
-TMP_ROOT=$(/usr/bin/mktemp -d "$TMP_BASE/codex-provider-compat.XXXXXX") || exit 1
+TMP_ROOT=
 LOCK_DIR=
 LOCK_NONCE=
 LOCK_SIGNAL_CODE=0
@@ -154,6 +154,25 @@ sha256() {
 filesize() { /usr/bin/stat -f '%z' "$1"; }
 filemode() { /usr/bin/stat -f '%Lp' "$1"; }
 timestamp() { /bin/date '+%Y%m%d-%H%M%S'; }
+
+init_temp_root() {
+  case "$TMP_BASE" in /*) ;; *) return 1 ;; esac
+  normalized_tmp_base=$(absolute_path "$TMP_BASE" resolve) || return 1
+  [ "$normalized_tmp_base" != / ] || return 1
+  [ -d "$normalized_tmp_base" ] && [ ! -L "$normalized_tmp_base" ] || return 1
+  case "$normalized_tmp_base" in
+    "$CODEX_ROOT"|"$CODEX_ROOT"/*) return 1 ;;
+  esac
+  TMP_BASE=${normalized_tmp_base%/}
+  [ -n "$TMP_BASE" ] || TMP_BASE=/
+  TMP_ROOT=$(/usr/bin/mktemp -d "$TMP_BASE/codex-provider-compat.XXXXXX") || return 1
+  canonical_candidate=$(absolute_path "$TMP_ROOT") || return 1
+  [ "$canonical_candidate" = "$TMP_ROOT" ] || return 1
+  [ -d "$TMP_ROOT" ] && [ ! -L "$TMP_ROOT" ] && [ "$(filemode "$TMP_ROOT")" = 700 ] || return 1
+  case "$TMP_ROOT" in
+    "$CODEX_ROOT"|"$CODEX_ROOT"/*) return 1 ;;
+  esac
+}
 
 unique_path() {
   p=$1
@@ -1637,6 +1656,8 @@ recover_transaction_preserving_config() {
 
 cleanup() {
   release_lock
+  [ -n "$TMP_ROOT" ] || return 0
+  [ -d "$TMP_ROOT" ] && [ ! -L "$TMP_ROOT" ] || return 0
   /bin/rm -f "$TMP_ROOT"/* "$TMP_ROOT"/.[!.]* "$TMP_ROOT"/..?* 2>/dev/null || true
   /bin/rmdir "$TMP_ROOT" 2>/dev/null || true
 }
@@ -1664,7 +1685,7 @@ prepare_apply_config() {
 
 doctor() {
   info "tool_version=$TOOL_VERSION patch_id=$PATCH_ID"
-  info "os=$(uname -s) codex_home=$CODEX_ROOT"
+  info "os=$(/usr/bin/uname -s) codex_home=$CODEX_ROOT"
   if transaction_exists; then
     path_guard "$CODEX_ROOT" "$TX_PATH" inside >/dev/null 2>&1 || { info 'result=unsafe'; return $EX_UNSAFE; }
     info 'result=recovery-required'
@@ -2084,6 +2105,7 @@ trap 'on_signal 143' TERM
 
 parse_args "$@" || { warn 'usage: codex-provider-compat.sh doctor|apply|status|rollback [options]'; exit $EX_ERROR; }
 resolve_home || { warn 'unsafe Codex home'; exit $EX_UNSAFE; }
+init_temp_root || { warn 'unsafe temporary directory'; exit $EX_UNSAFE; }
 internal_test_hooks_authorized || exit $EX_UNSAFE
 
 case "$COMMAND" in

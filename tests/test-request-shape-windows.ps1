@@ -498,6 +498,7 @@ log_user_prompt = false
 
 [features]
 apps = false
+code_mode = true
 plugins = false
 remote_plugin = false
 remote_models = false
@@ -580,6 +581,7 @@ function Assert-StandardShape($Record, $LiteTools) {
     $hostedWeb = @($tools | Where-Object type -eq 'web_search')
     Assert-Equal 1 $hostedWeb.Count 'standard request must include exactly one hosted web_search'
     Assert-True (@($tools | Where-Object { (Test-JsonProperty $_ 'name') -and $_.name -in @('exec', 'shell') }).Count -gt 0) 'standard request must include exec/shell capability'
+    Assert-Equal 1 @($tools | Where-Object { $_.type -eq 'custom' -and $_.name -eq 'exec' -and $_.description -like '*orchestrate/compose tool calls*' }).Count 'standard request must include the code-mode exec orchestrator'
     Assert-True (@($tools | Where-Object type -eq 'function').Count -gt 0) 'standard request must include ordinary function tools'
     Assert-Equal 1 @($tools | Where-Object { $_.type -eq 'namespace' -and $_.name -eq 'collaboration' }).Count 'standard request must include collaboration namespace'
 

@@ -4,7 +4,7 @@
 # Copyright (c) 2026 codex-provider-compat contributors
 
 $ErrorActionPreference = 'Stop'
-$script:ToolVersion = '0.1.0'
+$script:ToolVersion = '0.1.1'
 $script:PatchId = 'responses-lite-standard-tools'
 $script:TargetModels = @('gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna')
 $script:TrackedConfigKeys = @('model_catalog_json', 'web_search', 'model', 'model_provider', 'openai_base_url')
@@ -956,7 +956,46 @@ function Test-StateHealth([string]$CodexRoot,$State,[string]$CurrentVersion){
     return @($problems)
 }
 
-function Parse-Arguments([string[]]$InputArgs){if($InputArgs.Count-lt1){throw 'usage: codex-provider-compat.ps1 doctor|apply|status|rollback [options]'};$result=[ordered]@{Command=$InputArgs[0].ToLowerInvariant();Yes=$false;DryRun=$false;CodexHome=$null;CodexVersion=$null;CatalogFile=$null;EnableWebSearch=$false};for($i=1;$i-lt$InputArgs.Count;$i++){switch($InputArgs[$i]){'--yes'{$result.Yes=$true}'--dry-run'{$result.DryRun=$true}'--enable-web-search'{$result.EnableWebSearch=$true}'--codex-home'{if(++$i-ge$InputArgs.Count){throw '--codex-home requires a value'};$result.CodexHome=$InputArgs[$i]}'--codex-version'{if(++$i-ge$InputArgs.Count){throw '--codex-version requires a value'};$result.CodexVersion=$InputArgs[$i]}'--catalog-file'{if(++$i-ge$InputArgs.Count){throw '--catalog-file requires a value'};$result.CatalogFile=$InputArgs[$i]}default{throw "unknown argument: $($InputArgs[$i])"}}};if($result.Command-notin@('doctor','apply','status','rollback')){throw "unknown command: $($result.Command)"};return [pscustomobject]$result}
+function Parse-Arguments([string[]]$InputArgs) {
+    if ($InputArgs.Count -lt 1) { throw 'usage: codex-provider-compat.ps1 doctor|apply|status|rollback [options]' }
+    $result = [ordered]@{
+        Command = $InputArgs[0].ToLowerInvariant()
+        Yes = $false
+        DryRun = $false
+        CodexHome = $null
+        CodexHomeSet = $false
+        CodexVersion = $null
+        CodexVersionSet = $false
+        CatalogFile = $null
+        CatalogFileSet = $false
+        EnableWebSearch = $false
+    }
+    for ($i = 1; $i -lt $InputArgs.Count; $i++) {
+        switch ($InputArgs[$i]) {
+            '--yes' { $result.Yes = $true }
+            '--dry-run' { $result.DryRun = $true }
+            '--enable-web-search' { $result.EnableWebSearch = $true }
+            '--codex-home' {
+                if (++$i -ge $InputArgs.Count) { throw '--codex-home requires a value' }
+                $result.CodexHomeSet = $true
+                $result.CodexHome = $InputArgs[$i]
+            }
+            '--codex-version' {
+                if (++$i -ge $InputArgs.Count) { throw '--codex-version requires a value' }
+                $result.CodexVersionSet = $true
+                $result.CodexVersion = $InputArgs[$i]
+            }
+            '--catalog-file' {
+                if (++$i -ge $InputArgs.Count) { throw '--catalog-file requires a value' }
+                $result.CatalogFileSet = $true
+                $result.CatalogFile = $InputArgs[$i]
+            }
+            default { throw "unknown argument: $($InputArgs[$i])" }
+        }
+    }
+    if ($result.Command -notin @('doctor','apply','status','rollback')) { throw "unknown command: $($result.Command)" }
+    return [pscustomobject]$result
+}
 function Show-Versions($Versions){foreach($v in $Versions){if($v.Version){Write-Info "version source: $($v.Source) -> $($v.Version) [$($v.Path)]"}else{Write-Warn "version source unresolved: $($v.Source) [$($v.Path)] ($($v.Error))"}}}
 function Confirm-Write($Options,[string]$Summary){if($Options.DryRun-or$Options.Yes){return $true};$answer=Read-Host "$Summary Continue? [y/N]";return $answer-match'^(y|yes)$'}
 function Test-RecoveryRequired([string]$CodexRoot){try{$transaction=Read-Transaction $CodexRoot}catch{Write-Warn $_.Exception.Message;Write-Info 'result=unsafe';return $true};if($transaction){Write-Warn "interrupted $($transaction.operation) transaction requires recovery; run apply or rollback";Write-Info 'result=recovery-required';return $true};return $false}
@@ -1106,6 +1145,34 @@ function Invoke-Rollback($Options,[string]$CodexRoot){
     return $script:ExitUnsafe
 }
 
-function Invoke-Main([string[]]$InputArgs){try{Assert-InternalTestAuthorization}catch{Write-Warn $_.Exception.Message;return $script:ExitUnsafe};try{$options=Parse-Arguments $InputArgs}catch{Write-Warn $_.Exception.Message;return $script:ExitError};try{$CodexRoot=Resolve-CodexHome $options.CodexHome}catch{Write-Warn $_.Exception.Message;return $script:ExitUnsafe};switch($options.Command){'doctor'{return Invoke-Doctor $options $CodexRoot}'apply'{return Invoke-Apply $options $CodexRoot}'status'{return Invoke-Status $options $CodexRoot}'rollback'{return Invoke-Rollback $options $CodexRoot}};return $script:ExitError}
+function Invoke-Main([string[]]$InputArgs) {
+    try { Assert-InternalTestAuthorization }
+    catch { Write-Warn $_.Exception.Message; return $script:ExitUnsafe }
+    try { $options = Parse-Arguments $InputArgs }
+    catch { Write-Warn $_.Exception.Message; return $script:ExitError }
+
+    if ($options.CodexHomeSet -and [string]::IsNullOrWhiteSpace($options.CodexHome)) {
+        Write-Warn '--codex-home must not be empty'
+        return $script:ExitUnsafe
+    }
+    if ($options.CodexVersionSet -and [string]::IsNullOrWhiteSpace($options.CodexVersion)) {
+        Write-Warn '--codex-version must not be empty'
+        return $script:ExitError
+    }
+    if ($options.CatalogFileSet -and [string]::IsNullOrWhiteSpace($options.CatalogFile)) {
+        Write-Warn '--catalog-file must not be empty'
+        return $script:ExitError
+    }
+
+    try { $CodexRoot = Resolve-CodexHome $options.CodexHome }
+    catch { Write-Warn $_.Exception.Message; return $script:ExitUnsafe }
+    switch ($options.Command) {
+        'doctor' { return Invoke-Doctor $options $CodexRoot }
+        'apply' { return Invoke-Apply $options $CodexRoot }
+        'status' { return Invoke-Status $options $CodexRoot }
+        'rollback' { return Invoke-Rollback $options $CodexRoot }
+    }
+    return $script:ExitError
+}
 
 exit (Invoke-Main $args)

@@ -230,6 +230,37 @@ function Invoke-Tool([string[]]$Arguments, [hashtable]$Environment = @{}, [bool]
     }
 }
 
+function Invoke-ToolWithExactArguments([string[]]$Arguments, [hashtable]$Environment = @{}) {
+    $effective = @{
+        CODEX_PROVIDER_COMPAT_TEST_VERSIONS = 'cli=0.144.1'
+        CODEX_PROVIDER_COMPAT_INTERNAL_TEST_CONFIRM = 'I-understand-this-is-test-only'
+    }
+    foreach ($key in $Environment.Keys) { $effective[$key] = $Environment[$key] }
+    $old = @{}
+    foreach ($key in $effective.Keys) {
+        $old[$key] = [Environment]::GetEnvironmentVariable($key,'Process')
+        [Environment]::SetEnvironmentVariable($key,[string]$effective[$key],'Process')
+    }
+    try {
+        $argumentJson = ConvertTo-Json -InputObject @($Arguments) -Compress
+        $argumentPayload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($argumentJson))
+        $scriptPayload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($scriptPath))
+        $command = @"
+`$scriptToRun = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$scriptPayload'))
+`$argumentJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$argumentPayload'))
+`$parsedArguments = ConvertFrom-Json -InputObject `$argumentJson
+`$exactArguments = [string[]]@(foreach (`$argument in `$parsedArguments) { [string]`$argument })
+& `$scriptToRun @exactArguments
+exit `$LASTEXITCODE
+"@
+        $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+        $output = & $powershellExe -NoLogo -NoProfile -EncodedCommand $encodedCommand 2>&1 | Out-String
+        return [pscustomobject]@{ ExitCode=$LASTEXITCODE; Output=$output }
+    } finally {
+        foreach ($key in $effective.Keys) { [Environment]::SetEnvironmentVariable($key,$old[$key],'Process') }
+    }
+}
+
 function ConvertTo-NativeCommandLineArgument([string]$Value) {
     if ($Value.Contains('"')) { throw 'the native test launcher does not accept arguments containing a quote' }
     if ($Value.EndsWith('\')) { throw 'the native test launcher does not accept arguments ending in a backslash' }
@@ -639,6 +670,26 @@ Test-Case 'unsafe home and read-only config fail with exit 3; external catalog i
     $systemTrees=@($env:SystemRoot,$env:ProgramFiles,${env:ProgramFiles(x86)},$env:ProgramW6432,$env:ProgramData)|Where-Object{-not[string]::IsNullOrWhiteSpace([string]$_)}|Select-Object -Unique;foreach($systemTree in $systemTrees){$unsafeDescendant=Join-Path ([string]$systemTree) 'CodexProviderCompatUnsafeProbe';Assert-Equal 3 (Invoke-Tool @('doctor','--codex-home',$unsafeDescendant)).ExitCode "system-managed descendant accepted: $unsafeDescendant"}
     $CodexRoot=New-TestHome 'readonly-config';Copy-Fixture 'config-basic.toml' (Join-Path $CodexRoot 'config.toml');$config=Get-Item (Join-Path $CodexRoot 'config.toml');$before=(Get-FileHash $config.FullName).Hash;$config.IsReadOnly=$true;try{$r=Invoke-Tool (Apply-Args $CodexRoot);Assert-Equal 3 $r.ExitCode $r.Output;Assert-Equal $before (Get-FileHash $config.FullName).Hash 'read-only config changed';Assert-False (Test-Path -LiteralPath (Join-Path $CodexRoot 'provider-compat-transaction.json')) 'journal remained'}finally{$config.IsReadOnly=$false}
     $outside=New-TestHome 'external-catalog';$external=Join-Path $outside 'models.json';Copy-Fixture 'models-valid.json' $external;$hash=(Get-FileHash $external).Hash;$externalHome=New-TestHome 'external-catalog-home';Copy-Fixture 'config-basic.toml' (Join-Path $externalHome 'config.toml');Assert-Equal 0 (Invoke-Tool @('apply','--yes','--codex-home',$externalHome,'--codex-version','0.144.1','--catalog-file',$external)).ExitCode 'external input apply';Assert-Equal $hash (Get-FileHash $external).Hash 'external catalog modified'
+}
+
+Test-Case 'explicit empty option values never fall back to environment or discovery' {
+    $fallbackHome=New-TestHome 'empty-options';$configPath=Join-Path $fallbackHome 'config.toml';Copy-Fixture 'config-basic.toml' $configPath;$catalog=Join-Path $fixtures 'models-valid.json';$before=Snapshot-TestRoot $fallbackHome
+    foreach($emptyHome in @('','   ')){
+        $result=Invoke-ToolWithExactArguments @('apply','--yes','--codex-home',$emptyHome,'--codex-version','0.144.1','--catalog-file',$catalog) @{CODEX_HOME=$fallbackHome}
+        Assert-Equal 3 $result.ExitCode "explicit empty --codex-home was accepted: [$emptyHome]"
+        Assert-Equal $before (Snapshot-TestRoot $fallbackHome) 'explicit empty --codex-home changed the fallback home'
+    }
+    foreach($emptyVersion in @('','   ')){
+        $result=Invoke-ToolWithExactArguments @('apply','--yes','--codex-home',$fallbackHome,'--codex-version',$emptyVersion,'--catalog-file',$catalog)
+        Assert-Equal 1 $result.ExitCode "explicit empty --codex-version was accepted: [$emptyVersion]"
+        Assert-Equal $before (Snapshot-TestRoot $fallbackHome) 'explicit empty --codex-version changed Codex home'
+    }
+    foreach($emptyCatalog in @('','   ')){
+        $result=Invoke-ToolWithExactArguments @('apply','--yes','--codex-home',$fallbackHome,'--codex-version','0.144.1','--catalog-file',$emptyCatalog) @{CODEX_PROVIDER_COMPAT_TEST_DOWNLOAD_MODE='404'}
+        Assert-Equal 1 $result.ExitCode "explicit empty --catalog-file was accepted: [$emptyCatalog]"
+        Assert-Equal $before (Snapshot-TestRoot $fallbackHome) 'explicit empty --catalog-file changed Codex home'
+    }
+    foreach($ownedName in @('provider-compat-state.json','provider-compat-transaction.json','provider-compat.lock','model-catalogs')){Assert-False (Test-Path -LiteralPath (Join-Path $fallbackHome $ownedName)) "empty option created $ownedName"}
 }
 
 Test-Case 'confirmation TOCTOU is replanned once and repeated drift is rejected' {

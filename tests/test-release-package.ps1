@@ -59,9 +59,58 @@ function Get-ZipEntryBytes {
     }
 }
 
+function Assert-PackageReadme {
+    param(
+        [Parameter(Mandatory = $true)][byte[]]$Bytes,
+        [Parameter(Mandatory = $true)][ValidateSet('windows', 'macos')][string]$Platform
+    )
+
+    Assert-True ($Bytes.Length -gt 0) "$Platform package README must not be empty"
+    Assert-True (-not ($Bytes.Length -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF)) "$Platform package README must use UTF-8 without BOM"
+    Assert-True ([Array]::IndexOf($Bytes, [byte]0x0D) -lt 0) "$Platform package README must use LF only"
+    $text = (New-Object Text.UTF8Encoding($false, $true)).GetString($Bytes)
+    foreach ($required in @(
+        'SHA256SUMS.txt',
+        'doctor',
+        'apply',
+        'status',
+        'rollback',
+        '--dry-run',
+        '--enable-web-search',
+        'instead of plain `apply` on the first installation',
+        'run `rollback` first',
+        'completely quit and restart Codex',
+        'create a new task/thread',
+        'Search may incur provider charges',
+        'recovery-required',
+        'After every Codex update',
+        'unofficial community tool',
+        'cannot make a provider implement',
+        '完全退出并重新启动 Codex',
+        '新建任务/thread',
+        '搜索可能产生 provider 费用',
+        '每次 Codex 更新后'
+    )) {
+        Assert-True ($text.Contains($required)) "$Platform package README is missing required guidance: $required"
+    }
+
+    if ($Platform -eq 'windows') {
+        foreach ($required in @('Get-FileHash', 'powershell.exe', 'codex-provider-compat.ps1', 'codex-provider-compat-v0.1.1-windows.zip')) {
+            Assert-True ($text.Contains($required)) "Windows package README is missing: $required"
+        }
+        Assert-True (-not $text.Contains('codex-provider-compat-v0.1.1-macos.zip')) 'Windows package README must not direct users to the macOS archive'
+    }
+    else {
+        foreach ($required in @('shasum -a 256', 'chmod +x', 'codex-provider-compat.sh', 'codex-provider-compat-v0.1.1-macos.zip')) {
+            Assert-True ($text.Contains($required)) "macOS package README is missing: $required"
+        }
+        Assert-True (-not $text.Contains('codex-provider-compat-v0.1.1-windows.zip')) 'macOS package README must not direct users to the Windows archive'
+    }
+}
+
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $builder = Join-Path $repoRoot 'scripts/build-release.ps1'
-$version = '0.1.0'
+$version = '0.1.1'
 $prefix = "codex-provider-compat-v$version"
 $expectedAssets = @(
     'codex-provider-compat.ps1',
@@ -110,7 +159,7 @@ try {
     $null = New-Item -ItemType Directory -Path $mismatchOutput
     $mismatchFailed = $false
     try {
-        & $builder -Version '0.1.1' -OutputDirectory $mismatchOutput
+        & $builder -Version '0.1.2' -OutputDirectory $mismatchOutput
     }
     catch {
         $mismatchFailed = $true
@@ -162,12 +211,12 @@ try {
         $expectedWindowsNames = @(
             "$windowsRoot/LICENSE",
             "$windowsRoot/README.md",
-            "$windowsRoot/README.zh-CN.md",
             "$windowsRoot/THIRD_PARTY_NOTICES.md",
             "$windowsRoot/codex-provider-compat.ps1"
         ) | Sort-Object
         Assert-True (($windowsNames -join "`n") -eq ($expectedWindowsNames -join "`n")) 'Windows ZIP contents are incorrect'
         Assert-BytesEqual -Expected ([IO.File]::ReadAllBytes((Join-Path $repoRoot 'codex-provider-compat.ps1'))) -Actual (Get-ZipEntryBytes -Archive $windowsArchive -Name "$windowsRoot/codex-provider-compat.ps1") -Label 'Windows ZIP script'
+        Assert-PackageReadme -Bytes (Get-ZipEntryBytes -Archive $windowsArchive -Name "$windowsRoot/README.md") -Platform windows
     }
     finally {
         $windowsArchive.Dispose()
@@ -181,12 +230,12 @@ try {
         $expectedMacosNames = @(
             "$macosRoot/LICENSE",
             "$macosRoot/README.md",
-            "$macosRoot/README.zh-CN.md",
             "$macosRoot/THIRD_PARTY_NOTICES.md",
             "$macosRoot/codex-provider-compat.sh"
         ) | Sort-Object
         Assert-True (($macosNames -join "`n") -eq ($expectedMacosNames -join "`n")) 'macOS ZIP contents are incorrect'
         Assert-BytesEqual -Expected ([IO.File]::ReadAllBytes((Join-Path $repoRoot 'codex-provider-compat.sh'))) -Actual (Get-ZipEntryBytes -Archive $macosArchive -Name "$macosRoot/codex-provider-compat.sh") -Label 'macOS ZIP script'
+        Assert-PackageReadme -Bytes (Get-ZipEntryBytes -Archive $macosArchive -Name "$macosRoot/README.md") -Platform macos
         $scriptEntry = $macosArchive.GetEntry("$macosRoot/codex-provider-compat.sh")
         $unsignedAttributes = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$scriptEntry.ExternalAttributes), 0)
         $mode = ($unsignedAttributes -shr 16) -band 0xFFFF

@@ -120,6 +120,14 @@ function Get-Sha256Hex {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
+function ConvertTo-PackageReadmeBytes {
+    param([Parameter(Mandatory = $true)][string]$Text)
+
+    $normalized = $Text.Replace("`r`n", "`n").Replace("`r", "`n").TrimEnd([char[]]@("`r", "`n")) + "`n"
+    $encoding = New-Object Text.UTF8Encoding($false)
+    return $encoding.GetBytes($normalized)
+}
+
 function Get-OrdinalSortedStrings {
     param([Parameter(Mandatory = $true)][string[]]$Values)
 
@@ -358,17 +366,15 @@ if ($normalizedVersion.StartsWith('v', [StringComparison]::OrdinalIgnoreCase)) {
     $normalizedVersion = $normalizedVersion.Substring(1)
 }
 if ($normalizedVersion -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') {
-    throw "version must be a stable semantic version such as 0.1.0: $Version"
+    throw "version must be a stable semantic version such as 1.2.3: $Version"
 }
 
 $repoRoot = Get-AbsolutePath (Join-Path $PSScriptRoot '..')
 $sourcePowerShell = Join-Path $repoRoot 'codex-provider-compat.ps1'
 $sourceShell = Join-Path $repoRoot 'codex-provider-compat.sh'
-$sourceReadme = Join-Path $repoRoot 'README.md'
-$sourceReadmeZh = Join-Path $repoRoot 'README.zh-CN.md'
 $sourceLicense = Join-Path $repoRoot 'LICENSE'
 $sourceNotices = Join-Path $repoRoot 'THIRD_PARTY_NOTICES.md'
-$requiredSources = @($sourcePowerShell, $sourceShell, $sourceReadme, $sourceReadmeZh, $sourceLicense, $sourceNotices)
+$requiredSources = @($sourcePowerShell, $sourceShell, $sourceLicense, $sourceNotices)
 foreach ($path in $requiredSources) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "required release source is missing: $path"
@@ -376,7 +382,7 @@ foreach ($path in $requiredSources) {
 }
 
 $source = Assert-SourceEncoding -PowerShellPath $sourcePowerShell -ShellPath $sourceShell -LfPaths @(
-    $sourceReadme, $sourceReadmeZh, $sourceLicense, $sourceNotices
+    $sourceLicense, $sourceNotices
 )
 if ($source.PowerShellText -notmatch '(?m)^# SPDX-License-Identifier: MIT\r?$' -or
     $source.ShellText -notmatch '(?m)^# SPDX-License-Identifier: MIT$') {
@@ -404,16 +410,162 @@ $standaloneShellPath = Join-Path $outputRoot $standaloneShellName
 [IO.File]::WriteAllBytes($standalonePowerShellPath, [byte[]]$source.PowerShellBytes)
 [IO.File]::WriteAllBytes($standaloneShellPath, [byte[]]$source.ShellBytes)
 
+$windowsReadmeTemplate = @'
+# Codex Provider Compatibility — Windows quick start / Windows 快速开始
+
+This package helps when `gpt-5.6-sol`, `gpt-5.6-terra`, or `gpt-5.6-luna` works for chat through a custom provider but Codex tools such as shell/exec, functions, MCP, collaboration, or Web Search are missing. Its persistent Codex changes stay inside your user Codex home and can be rolled back.
+
+本工具适用于以下情况：通过自定义 provider 使用 `gpt-5.6-sol`、`gpt-5.6-terra` 或 `gpt-5.6-luna` 时，普通对话正常，但 shell/exec、函数、MCP、协作或 Web Search 等 Codex 工具消失。它对 Codex 的持久修改只发生在用户 Codex home 内，并且可以回滚。
+
+## 1. Verify the download / 校验下载文件
+
+Download `SHA256SUMS.txt` from the same GitHub Release. Before extracting, run this in the folder that contains both files and compare the ZIP hash with its matching line:
+
+从同一个 GitHub Release 下载 `SHA256SUMS.txt`。解压前，在同时包含这两个文件的目录中运行下面的命令，并将 ZIP 哈希与对应记录比较：
+
+```powershell
+(Get-FileHash .\codex-provider-compat-v{{VERSION}}-windows.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+```
+
+You may inspect `codex-provider-compat.ps1` with a text editor before running it. The script does not read credentials or contact your provider.
+
+运行前可以使用文本编辑器检查 `codex-provider-compat.ps1`。脚本不会读取凭据，也不会访问你的 provider。
+
+## 2. Diagnose and apply / 诊断并应用
+
+Open PowerShell in this extracted folder:
+
+在解压目录中打开 PowerShell：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\codex-provider-compat.ps1 doctor
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\codex-provider-compat.ps1 apply
+```
+
+Review the plan and confirm when prompted. Automation may add `--yes`; use `--dry-run` to preview with zero writes. If Codex versions conflict, follow the script's simple error and use an explicit `--codex-version` only when you know which installed version you are restarting.
+
+请查看计划并在提示时确认。自动化可以添加 `--yes`；使用 `--dry-run` 可进行零写入预览。如果检测到 Codex 版本冲突，请按脚本的简单提示处理；只有明确知道将重启哪个版本时才使用 `--codex-version`。
+
+After `apply`, completely quit and restart Codex, then create a new task/thread. Existing tasks keep their startup snapshot and will not change.
+
+执行 `apply` 后，请完全退出并重新启动 Codex，然后新建任务/thread。旧任务保留启动时快照，不会自动变化。
+
+## 3. Check or undo / 检查或回滚
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\codex-provider-compat.ps1 status
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\codex-provider-compat.ps1 rollback
+```
+
+After `rollback`, completely restart Codex and create a new task/thread again. Rollback restores only changes owned by this tool and preserves unrelated later config edits.
+
+执行 `rollback` 后也需要完全重启 Codex 并再次新建任务/thread。回滚只恢复本工具拥有的改动，并保留之后产生的无关配置修改。
+
+## Optional Web Search setting / 可选 Web Search 设置
+
+The base patch does not enable Web Search. If your provider supports the standard Responses `web_search` tool and you want live hosted search, use `apply --enable-web-search` instead of plain `apply` on the first installation. If the base patch is already applied, run `rollback` first, restart Codex, and then apply again with this flag. Search may incur provider charges. This option does not make an unsupported provider support search.
+
+基础补丁不会启用 Web Search。如果 provider 支持标准 Responses `web_search` 工具，而且你需要实时 hosted search，请在首次安装时用 `apply --enable-web-search` 替代普通 `apply`。如果基础补丁已经安装，先运行 `rollback`，重启 Codex，再带此参数重新应用。搜索可能产生 provider 费用；此选项不会让原本不支持搜索的 provider 获得该能力。
+
+## Safety and updates / 安全与更新
+
+This is an unofficial community tool. It does not read credentials or contact your provider. Restoring standard tool definitions cannot make a provider implement shell, MCP, search, or any other capability it does not support.
+
+这是一个非官方社区工具。它不会读取凭据，也不会访问你的 provider。恢复标准工具定义并不能让 provider 获得它原本没有实现的 shell、MCP、搜索或其他能力。
+
+If `doctor` or `status` reports `recovery-required`, do not delete lock, transaction, or pending files; run the intended `apply` or `rollback` again. A healthy `status` can still be superseded by a selected profile, project configuration, or CLI override, so run `doctor` the same way you launch Codex. After every Codex update, run `status` and `doctor` again rather than keeping an old catalog across versions.
+
+如果 `doctor` 或 `status` 显示 `recovery-required`，不要删除 lock、transaction 或 pending 文件；再次运行原本要执行的 `apply` 或 `rollback`。已选 profile、项目配置或 CLI 参数仍可能覆盖健康的用户级状态，因此请用平时启动 Codex 的方式运行 `doctor`。每次 Codex 更新后都要重新运行 `status` 和 `doctor`，不要让旧 catalog 跨版本继续生效。
+
+Exit codes: `0` success/healthy, `1` general error, `2` not applicable, `3` unsafe or ambiguous state, `4` stale patch/catalog, `5` network or upstream catalog failure.
+
+退出码：`0` 成功/健康，`1` 一般错误，`2` 不适用，`3` 不安全或歧义状态，`4` 补丁/catalog 过期，`5` 网络或上游 catalog 获取失败。
+'@
+$windowsReadmeBytes = ConvertTo-PackageReadmeBytes ($windowsReadmeTemplate.Replace('{{VERSION}}', $normalizedVersion))
+
+$macosReadmeTemplate = @'
+# Codex Provider Compatibility — macOS quick start / macOS 快速开始
+
+This package helps when `gpt-5.6-sol`, `gpt-5.6-terra`, or `gpt-5.6-luna` works for chat through a custom provider but Codex tools such as shell/exec, functions, MCP, collaboration, or Web Search are missing. Its persistent Codex changes stay inside your user Codex home and can be rolled back.
+
+本工具适用于以下情况：通过自定义 provider 使用 `gpt-5.6-sol`、`gpt-5.6-terra` 或 `gpt-5.6-luna` 时，普通对话正常，但 shell/exec、函数、MCP、协作或 Web Search 等 Codex 工具消失。它对 Codex 的持久修改只发生在用户 Codex home 内，并且可以回滚。
+
+## 1. Verify the download / 校验下载文件
+
+Download `SHA256SUMS.txt` from the same GitHub Release. Before extracting, run this in the folder that contains both files and compare the ZIP hash with its matching line:
+
+从同一个 GitHub Release 下载 `SHA256SUMS.txt`。解压前，在同时包含这两个文件的目录中运行下面的命令，并将 ZIP 哈希与对应记录比较：
+
+```sh
+shasum -a 256 codex-provider-compat-v{{VERSION}}-macos.zip
+```
+
+You may inspect `codex-provider-compat.sh` with a text editor before running it. The script does not read credentials or contact your provider.
+
+运行前可以使用文本编辑器检查 `codex-provider-compat.sh`。脚本不会读取凭据，也不会访问你的 provider。
+
+## 2. Diagnose and apply / 诊断并应用
+
+Open Terminal in this extracted folder:
+
+在解压目录中打开“终端”：
+
+```sh
+chmod +x ./codex-provider-compat.sh
+./codex-provider-compat.sh doctor
+./codex-provider-compat.sh apply
+```
+
+Review the plan and confirm when prompted. Automation may add `--yes`; use `--dry-run` to preview with zero writes. If Codex versions conflict, follow the script's simple error and use an explicit `--codex-version` only when you know which installed version you are restarting.
+
+请查看计划并在提示时确认。自动化可以添加 `--yes`；使用 `--dry-run` 可进行零写入预览。如果检测到 Codex 版本冲突，请按脚本的简单提示处理；只有明确知道将重启哪个版本时才使用 `--codex-version`。
+
+After `apply`, completely quit and restart Codex, then create a new task/thread. Existing tasks keep their startup snapshot and will not change.
+
+执行 `apply` 后，请完全退出并重新启动 Codex，然后新建任务/thread。旧任务保留启动时快照，不会自动变化。
+
+## 3. Check or undo / 检查或回滚
+
+```sh
+./codex-provider-compat.sh status
+./codex-provider-compat.sh rollback
+```
+
+After `rollback`, completely restart Codex and create a new task/thread again. Rollback restores only changes owned by this tool and preserves unrelated later config edits.
+
+执行 `rollback` 后也需要完全重启 Codex 并再次新建任务/thread。回滚只恢复本工具拥有的改动，并保留之后产生的无关配置修改。
+
+## Optional Web Search setting / 可选 Web Search 设置
+
+The base patch does not enable Web Search. If your provider supports the standard Responses `web_search` tool and you want live hosted search, use `apply --enable-web-search` instead of plain `apply` on the first installation. If the base patch is already applied, run `rollback` first, restart Codex, and then apply again with this flag. Search may incur provider charges. This option does not make an unsupported provider support search.
+
+基础补丁不会启用 Web Search。如果 provider 支持标准 Responses `web_search` 工具，而且你需要实时 hosted search，请在首次安装时用 `apply --enable-web-search` 替代普通 `apply`。如果基础补丁已经安装，先运行 `rollback`，重启 Codex，再带此参数重新应用。搜索可能产生 provider 费用；此选项不会让原本不支持搜索的 provider 获得该能力。
+
+## Safety and updates / 安全与更新
+
+This is an unofficial community tool. It does not read credentials or contact your provider. Restoring standard tool definitions cannot make a provider implement shell, MCP, search, or any other capability it does not support.
+
+这是一个非官方社区工具。它不会读取凭据，也不会访问你的 provider。恢复标准工具定义并不能让 provider 获得它原本没有实现的 shell、MCP、搜索或其他能力。
+
+If `doctor` or `status` reports `recovery-required`, do not delete lock, transaction, or pending files; run the intended `apply` or `rollback` again. A healthy `status` can still be superseded by a selected profile, project configuration, or CLI override, so run `doctor` the same way you launch Codex. After every Codex update, run `status` and `doctor` again rather than keeping an old catalog across versions.
+
+如果 `doctor` 或 `status` 显示 `recovery-required`，不要删除 lock、transaction 或 pending 文件；再次运行原本要执行的 `apply` 或 `rollback`。已选 profile、项目配置或 CLI 参数仍可能覆盖健康的用户级状态，因此请用平时启动 Codex 的方式运行 `doctor`。每次 Codex 更新后都要重新运行 `status` 和 `doctor`，不要让旧 catalog 跨版本继续生效。
+
+Exit codes: `0` success/healthy, `1` general error, `2` not applicable, `3` unsafe or ambiguous state, `4` stale patch/catalog, `5` network or upstream catalog failure.
+
+退出码：`0` 成功/健康，`1` 一般错误，`2` 不适用，`3` 不安全或歧义状态，`4` 补丁/catalog 过期，`5` 网络或上游 catalog 获取失败。
+'@
+$macosReadmeBytes = ConvertTo-PackageReadmeBytes ($macosReadmeTemplate.Replace('{{VERSION}}', $normalizedVersion))
+
 $commonFiles = @(
-    [pscustomobject]@{ RelativeName = 'README.md'; Bytes = [IO.File]::ReadAllBytes($sourceReadme); Mode = 33188 },
-    [pscustomobject]@{ RelativeName = 'README.zh-CN.md'; Bytes = [IO.File]::ReadAllBytes($sourceReadmeZh); Mode = 33188 },
     [pscustomobject]@{ RelativeName = 'LICENSE'; Bytes = [IO.File]::ReadAllBytes($sourceLicense); Mode = 33188 },
     [pscustomobject]@{ RelativeName = 'THIRD_PARTY_NOTICES.md'; Bytes = [IO.File]::ReadAllBytes($sourceNotices); Mode = 33188 }
 )
 
 $windowsRoot = "$prefix-windows"
 $windowsEntries = @(
-    [pscustomobject]@{ Name = "$windowsRoot/codex-provider-compat.ps1"; Bytes = [byte[]]$source.PowerShellBytes; Mode = 33188 }
+    [pscustomobject]@{ Name = "$windowsRoot/codex-provider-compat.ps1"; Bytes = [byte[]]$source.PowerShellBytes; Mode = 33188 },
+    [pscustomobject]@{ Name = "$windowsRoot/README.md"; Bytes = [byte[]]$windowsReadmeBytes; Mode = 33188 }
 )
 foreach ($file in $commonFiles) {
     $windowsEntries += [pscustomobject]@{ Name = "$windowsRoot/$($file.RelativeName)"; Bytes = [byte[]]$file.Bytes; Mode = [int]$file.Mode }
@@ -421,7 +573,8 @@ foreach ($file in $commonFiles) {
 
 $macosRoot = "$prefix-macos"
 $macosEntries = @(
-    [pscustomobject]@{ Name = "$macosRoot/codex-provider-compat.sh"; Bytes = [byte[]]$source.ShellBytes; Mode = 33261 }
+    [pscustomobject]@{ Name = "$macosRoot/codex-provider-compat.sh"; Bytes = [byte[]]$source.ShellBytes; Mode = 33261 },
+    [pscustomobject]@{ Name = "$macosRoot/README.md"; Bytes = [byte[]]$macosReadmeBytes; Mode = 33188 }
 )
 foreach ($file in $commonFiles) {
     $macosEntries += [pscustomobject]@{ Name = "$macosRoot/$($file.RelativeName)"; Bytes = [byte[]]$file.Bytes; Mode = [int]$file.Mode }

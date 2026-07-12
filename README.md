@@ -1,62 +1,61 @@
 # Codex Provider Compatibility
 
-A local, reversible compatibility patch for Codex users whose custom provider supports standard OpenAI Responses tools but not Codex's internal Responses Lite tool format.
+Restore missing Codex tools when GPT-5.6 Sol, Terra, or Luna is used through a custom OpenAI-compatible API/provider.
 
-[简体中文](README.zh-CN.md) · [Automated tests](https://github.com/Hyacehila/codex-provider-compat/actions/workflows/test.yml)
+[简体中文](README.zh-CN.md) · [Download v0.1.1](https://github.com/Hyacehila/codex-provider-compat/releases/tag/v0.1.1) · [Automated tests](https://github.com/Hyacehila/codex-provider-compat/actions/workflows/test.yml)
+
+You may need this tool if Codex can still chat, but after selecting one of those models it no longer:
+
+- searches the web or runs terminal commands;
+- calls functions, MCP servers, or extension tools;
+- uses code mode or collaboration/multi-agent tools.
+
+Codex may describe what it would do but return only text. If the same features work after switching to another model, and you configured a custom API/provider, this compatibility issue is a likely cause.
+
+You do not need to inspect traffic, learn a protocol, call an API by hand, or edit JSON/TOML. The normal path is:
+
+```text
+download and verify -> doctor -> apply -> fully restart Codex -> create a new task
+```
 
 > This is an unofficial community project. It is not an OpenAI product and is not endorsed by OpenAI or by any API provider.
-
-Shortest path: `download and verify -> doctor -> apply -> fully restart Codex -> create a new task`.
 
 ## How to use
 
 ### Check whether it applies
 
-Run `doctor` if all or most of these are true:
+The patch targets only GPT-5.6 Sol (`gpt-5.6-sol`), Terra (`gpt-5.6-terra`), and Luna (`gpt-5.6-luna`) when used with a custom provider. It is not intended for other models or Codex's built-in OpenAI connection.
 
-- the selected model is `gpt-5.6-sol`, `gpt-5.6-terra`, or `gpt-5.6-luna`;
-- you use a custom provider with `wire_api = "responses"`;
-- ordinary text works, but exec/shell, code mode, function/MCP tools, collaboration namespaces, extension tools, or Web Search are missing;
-- a non-Lite model works with the same provider;
-- the provider supports standard top-level tool definitions from the public Responses API.
+Always run `doctor` first. It checks local versions, configuration, and safety without writing any files. If the script cannot prove that a change is safe, it stops and leaves the active configuration alone.
 
-Do not apply the patch if the provider requires Responses Lite, does not support the standard Responses tools you need, or the selected model is not one of the three targets. `doctor` is read-only. If the tool cannot prove that an operation is safe, it stops without changing the active configuration.
+### Download and verify v0.1.1
 
-You do not need to inspect traffic, call an API manually, study the provider protocol, or edit JSON/TOML.
+Open the [v0.1.1 Release page](https://github.com/Hyacehila/codex-provider-compat/releases/tag/v0.1.1), then download `SHA256SUMS.txt` and the ZIP for your platform:
 
-### Download and verify v0.1.0
+| Platform | File |
+|---|---|
+| Windows | `codex-provider-compat-v0.1.1-windows.zip` |
+| macOS | `codex-provider-compat-v0.1.1-macos.zip` |
 
-From the [v0.1.0 Release page](https://github.com/Hyacehila/codex-provider-compat/releases/tag/v0.1.0), download the ZIP for your platform and `SHA256SUMS.txt`:
-
-- Windows: `codex-provider-compat-v0.1.0-windows.zip`
-- macOS: `codex-provider-compat-v0.1.0-macos.zip`
-
-The Release also provides standalone scripts for easier review:
-
-- `codex-provider-compat.ps1`
-- `codex-provider-compat.sh`
-
-Verify on Windows:
+Verify the Windows ZIP:
 
 ```powershell
-(Get-FileHash .\codex-provider-compat-v0.1.0-windows.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+(Get-FileHash .\codex-provider-compat-v0.1.1-windows.zip -Algorithm SHA256).Hash.ToLowerInvariant()
 Get-Content .\SHA256SUMS.txt
 ```
 
-Verify on macOS:
+Verify the macOS ZIP:
 
 ```sh
-shasum -a 256 ./codex-provider-compat-v0.1.0-macos.zip
+shasum -a 256 ./codex-provider-compat-v0.1.1-macos.zip
 cat ./SHA256SUMS.txt
 ```
 
-The computed value must match the entry in `SHA256SUMS.txt`. Then extract the ZIP and inspect the script before running it. Do not use an opaque `curl | sh` or `irm | iex` pipeline.
+The computed value must match the ZIP's entry in `SHA256SUMS.txt`. Extract the package and read its included README and script before running it. Standalone `.ps1` and `.sh` files are also available on the Release page for review. This project does not recommend opaque `curl | sh` or `irm | iex` commands.
 
 ### Windows
 
-Windows PowerShell 5.1 and PowerShell 7.5 or later are supported. Python, Node, `jq`, Chocolatey, and Scoop are not required.
-
-From the extracted directory:
+Windows PowerShell 5.1 and PowerShell 7.5 or later are supported. No extra runtime is required.
 
 ```powershell
 Get-Content .\codex-provider-compat.ps1
@@ -64,7 +63,7 @@ Get-Content .\codex-provider-compat.ps1
 .\codex-provider-compat.ps1 apply
 ```
 
-If Windows PowerShell blocks the downloaded script after you have verified its checksum and reviewed it, use a process-only execution-policy override:
+If Windows blocks the verified script, use a process-only execution-policy override:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\codex-provider-compat.ps1 doctor
@@ -73,9 +72,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\codex-provider-compat.
 
 ### macOS
 
-The script uses only the shell and system tools included with macOS, including `curl`, `awk`, `shasum`, and `osascript -l JavaScript`. Homebrew, Python, Node, and `jq` are not required.
-
-From the extracted directory:
+The script uses only tools included with macOS; Homebrew, Python, Node, and `jq` are not required.
 
 ```sh
 less ./codex-provider-compat.sh
@@ -84,14 +81,11 @@ chmod +x ./codex-provider-compat.sh
 ./codex-provider-compat.sh apply
 ```
 
-### After apply
+### Restart and create a new task
 
-```text
-Fully quit and restart Codex, then create a new task.
-Existing tasks keep the model and tool snapshot captured when they started.
-```
+After `apply` succeeds, fully quit and restart Codex, then create a new task. Old tasks keep the model and tool snapshot captured when they started, so reopening one is not enough.
 
-To also enable hosted Web Search, explicitly request it only after confirming that the provider supports the standard Responses `web_search` tool:
+Web Search is opt-in. If your provider supports the standard Responses `web_search` tool and you want live search, use the following command **instead of** the plain `apply` on your first installation:
 
 ```powershell
 .\codex-provider-compat.ps1 apply --enable-web-search
@@ -101,147 +95,80 @@ To also enable hosted Web Search, explicitly request it only after confirming th
 ./codex-provider-compat.sh apply --enable-web-search
 ```
 
-Search may be billable. A working Web Search request does not prove that exec, MCP, code mode, or image tools are also supported.
+If the base patch is already applied, run `rollback` first, restart Codex, and then apply again with `--enable-web-search`. Search may be billable. Working search does not prove that shell, MCP, code mode, or image tools are supported.
 
-### Check and roll back
-
-Check the installed state:
+### Check or undo the patch
 
 ```powershell
 .\codex-provider-compat.ps1 status
-```
-
-```sh
-./codex-provider-compat.sh status
-```
-
-Roll back:
-
-```powershell
 .\codex-provider-compat.ps1 rollback
 ```
 
 ```sh
+./codex-provider-compat.sh status
 ./codex-provider-compat.sh rollback
 ```
 
-Rollback restores only keys owned by this tool and preserves unrelated configuration changes made after apply. It removes the generated catalog only when its content and recorded ownership match, and it never overwrites a new file at the original cache path.
+Rollback removes only changes owned by this tool and preserves unrelated edits made after `apply`. Restart Codex and create a new task after rollback.
 
-After rollback, fully quit and restart Codex and create a new task.
+If `doctor` or `status` reports `recovery-required`, do not delete lock, transaction, or pending files. Run the intended `apply` or `rollback` command again so it can recover the interrupted operation. A healthy `status` verifies the tool-owned user-level patch, but a selected profile, project configuration, or CLI override can still change what a new task uses. Run `doctor` the same way you launch Codex; if it reports no override and the feature still fails, the provider probably does not implement that feature. Roll back instead of changing provider URLs, headers, or servers for this project.
 
-If `doctor` or `status` reports `recovery-required`, do not manually remove transaction, lock, or pending files. Run the intended `apply` or `rollback` again. The tool first restores the interrupted transaction. Unsafe paths or state cause an exit code 3 failure.
+After a Codex update, run `status` and `doctor` again. Do not keep an old catalog override across an unreviewed version change.
 
-### Commands, options, and exit codes
+### Commands and automation
 
 | Command | Purpose |
 |---|---|
-| `doctor` | Read-only environment, version, configuration, and applicability check |
-| `apply` | Validate, back up, and apply the patch |
-| `status` | Verify catalog, configuration, version, and transaction state |
-| `rollback` | Precisely undo changes owned by this tool |
+| `doctor` | Read-only applicability and safety check |
+| `apply` | Validate, back up, and install the patch |
+| `status` | Check the installed patch and version |
+| `rollback` | Undo only changes owned by this tool |
 
-Both scripts accept the same common options:
+Both scripts accept `--yes`, `--dry-run`, `--codex-home <absolute-path>`, `--codex-version <version>`, `--catalog-file <absolute-path>`, and `--enable-web-search`. Most users need none of these. Codex home and version are discovered automatically; a version conflict stops `apply`.
 
-```text
---yes
---dry-run
---codex-home <absolute-path>
---codex-version <version>
---catalog-file <absolute-path>
---enable-web-search
-```
-
-You normally do not need to specify Codex home or version. The tool checks `--codex-home`, then `CODEX_HOME`, then `~/.codex`, and discovers installed Codex versions. Conflicting versions stop apply until you review and explicitly select one with `--codex-version`. `--catalog-file` is a reviewed, read-only complete catalog input and never becomes a write target.
-
-| Code | Meaning |
+| Exit | Meaning |
 |---:|---|
 | 0 | Success or healthy state |
 | 1 | General usage or operation error |
 | 2 | Not applicable, not installed, or already fixed upstream |
 | 3 | Unsafe, ambiguous, corrupt, drifted, or recovery-required state |
-| 4 | Patch or catalog schema is stale for this version |
-| 5 | Official catalog network, HTTP, timeout, or size failure |
+| 4 | Patch or official catalog format is no longer compatible |
+| 5 | Official catalog download, HTTP, timeout, or size failure |
 
-Automation should use the exit code instead of parsing prose.
+## Want to know why?
 
-### Files, updates, and common problems
+### Why the tools disappear
 
-All persistent Codex changes stay inside the selected Codex home. The macOS script also uses a private mode-0700 system temporary workspace for downloads and analysis, then removes it on exit. Persistent Codex-home paths are:
+Codex's model catalog currently marks the three target models to use an internal request format called Responses Lite. In this mode, Codex describes client tools through `additional_tools` instead of the standard top-level `tools` field used by the public Responses API.
 
-```text
-config.toml
-config.toml.bak-provider-compat-YYYYMMDD-HHMMSS[.N]
-model-catalogs/models-<version>.standard-responses-compat.json
-models_cache.json.bak-provider-compat-YYYYMMDD-HHMMSS[.N]
-provider-compat-state.json
-provider-compat-state.json.rolled-back-YYYYMMDD-HHMMSS[.N]
-provider-compat-transaction.json                 # only while writing/recovering
-provider-compat.lock or provider-compat.lock.d/ # only while writing
-```
-
-The tool never deletes a config that existed before apply, and it never deletes cache data. If config did not exist before apply and still contains no unrelated user content, rollback removes the config created by this tool to restore the original absent-file state. The full config backup is an emergency manual copy; normal rollback uses state metadata to edit only owned keys. If a path, file ownership, or configuration form cannot be proven safe, the operation stops with no persistent Codex changes.
-
-After a Codex update, run `status` and `doctor`. The override is a complete catalog, so a stale copy can hide new models or preserve outdated capability metadata. Roll back the old patch before applying a catalog for a reviewed new version. If the official catalog already marks all three targets as non-Lite, `apply` exits 2 without creating another override.
-
-`status = healthy` proves only that the user-level files owned by the tool are internally consistent. A selected `$CODEX_HOME/<profile>.config.toml`, project configuration, or CLI/session override can still change the effective configuration of a particular task.
-
-If the patch is healthy but a tool still fails, the provider probably does not implement that standard Responses tool. Roll back; users are not expected to change the provider, base URL, headers, or server.
-
-## How it works
-
-### Root cause
-
-Verification against Codex `0.144.1` found the three target models marked as `use_responses_lite = true`:
+The built-in OpenAI path understands this format. Many custom OpenAI-compatible providers implement the public Responses format but not Codex's extra Lite format. They receive no standard tool definitions, so text still works while terminal, function, MCP, collaboration, extension, or hosted tools disappear.
 
 ```text
-Lite catalog flag
-    -> Codex uses internal additional_tools
+target model uses Responses Lite
+    -> Codex sends internal additional_tools
     -> standard top-level tools are absent or null
-    -> a normal OpenAI-compatible provider cannot see standard tool definitions
 
-This patch makes the three target models non-Lite
-    -> Codex restores standard Responses top-level tools
-    -> the provider can handle the tools it actually supports
+this patch disables Lite for the three target models
+    -> Codex sends standard Responses tools again
+    -> the provider can expose the tools it supports
 ```
 
-Lite mode also changes top-level `instructions`, parallel tool calls, reasoning context, image detail, and internal headers/metadata. Disabling Lite changes the whole request shape, not only Web Search.
+This is why a non-Lite model often works with the same provider. Web Search has an extra complication: Lite can skip hosted `web_search`, while the separate `web/run` extension is restricted by provider identity. Lite also changes instructions, parallel tool calls, reasoning context, image detail, and internal headers or metadata, so the patch changes the overall request shape rather than only search.
 
-Web Search has an additional two-path problem: Lite planning skips hosted `web_search`, while the standalone `web/run` extension is restricted by provider identity. Search is therefore an important acceptance case, but this project addresses provider/Responses request compatibility as a whole.
+### What the patch does
 
-Non-Lite models normally work because Codex sends standard top-level tool definitions. Official OpenAI/ChatGPT paths are usually different because their backend and authorized extensions understand the Lite protocol used by Codex.
+The patch ID is `responses-lite-standard-tools`. The script detects the Codex version, obtains the complete model catalog from its matching official `openai/codex` tag, and changes only `use_responses_lite` from `true` to `false` for Sol, Terra, and Luna. Any missing target, incomplete catalog, duplicate model, wrong field type, or other semantic change stops the operation.
 
-### What the patch changes
+It writes the generated catalog inside the selected Codex home, backs up configuration and model cache files, updates the user-level `model_catalog_json`, and records the minimum state needed for `status`, recovery, and rollback. Only `--enable-web-search` also adds `web_search = "live"`. The scripts do not change the selected model, provider, provider table, or unrelated settings.
 
-The first patch ID is `responses-lite-standard-tools`. The scripts:
+### Safety and limits
 
-1. discover Codex home and CLI, Desktop, and app-server versions, stopping safely on conflicts;
-2. download a complete catalog from the exact official `rust-v<version>` tag, or read a reviewed complete offline catalog;
-3. change only `use_responses_lite` for `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` to `false`, then verify that no other semantic difference exists;
-4. atomically write the generated catalog, point user-level `model_catalog_json` to it, back up config and cache, and record the minimum state needed for `status`, recovery, and rollback.
+Persistent Codex changes stay inside the selected Codex home. The scripts validate paths and ownership, reject Windows junction/reparse-point and macOS symlink escapes, preserve unrelated TOML content and permissions, and use locks, backups, atomic replacement, and a transaction journal. Ambiguous or unsafe state fails closed.
 
-Only an explicit `--enable-web-search` also sets user-level `web_search = "live"`. The tool does not change `model`, `model_provider`, provider tables, or unrelated settings.
+The tool does not read `auth.json` or API keys, call provider APIs, upload data, collect telemetry, host secrets, modify Codex binaries/source, modify any server, or proxy API traffic.
 
-### Safety boundary
+The patch restores standard tool definitions; it cannot make a provider implement a tool it does not support. Automated tests cover Windows PowerShell 5.1/7, macOS shell/JXA file behavior, catalog and TOML integrity, path safety, failure recovery, release packages, and Lite-versus-standard request shapes against a localhost mock server.
 
-- The catalog must be complete, structurally valid, and have unique slugs. Online downloads are accepted only from the exact official Codex tag; an offline file is treated as reviewed, read-only input. Download, schema, or target validation failure leaves config and cache untouched.
-- Recursive semantic comparison is performed before and after serialization. Only the three fixed boolean changes are allowed.
-- The TOML editor preserves comments, sections, BOM, LF/CRLF, trailing newline, unrelated text, and permissions. Duplicate, dotted, or non-lossless owned keys fail closed.
-- Mutating commands use a lock, same-directory atomic replacement, and a transaction journal so failed or interrupted apply/rollback operations can recover.
-- Write paths are reconstructed from Codex home and fixed naming rules. Windows junction/reparse-point and macOS non-system symlink escapes are rejected.
-- `doctor` and `status` remain read-only.
+Real-provider execution of Web Search, shell, functions, collaboration, code mode, MCP/dynamic tools, image tools, multi-turn history, and image detail remains `not-run` for v0.1.1; macOS Codex CLI/Desktop integration is also `not-run`. No real credentials or billable requests were used. See the [test workflow](https://github.com/Hyacehila/codex-provider-compat/actions/workflows/test.yml) for automated results.
 
-The tool does not modify, replace, or inject Codex CLI, Desktop, app-server, binaries, or source. It does not modify OpenAI/Codex services or a third-party provider, and it does not run an API proxy, remote repair service, or key-hosting service.
-
-### Capability and validation limits
-
-The patch restores standard tool definitions. It cannot make a provider implement exec, MCP, hosted search, image handling, or billing behavior that it does not support. A provider that accepts only Responses Lite may fail after the patch.
-
-Automated tests cover Windows PowerShell 5.1/7 lifecycles, macOS shell/JXA file semantics, complete-catalog validation, TOML preservation, path escapes, fault recovery, and Lite/standard request shapes from a pinned Codex CLI to a localhost mock Responses server. They do not read real credentials or send billable requests to a real provider.
-
-The localhost mock proves request shape, not universal provider compatibility. The following remain explicitly `not-run` for v0.1.0: macOS Codex CLI/Desktop integration; real-provider execution of hosted Web Search, exec/shell, function/collaboration, code mode, MCP/dynamic tools, and image tools; multi-turn history; and image-input detail. The [GitHub Actions workflow](https://github.com/Hyacehila/codex-provider-compat/actions/workflows/test.yml) is the source of automated results for each release commit.
-
-### Privacy and license
-
-The tool does not read `auth.json` or API keys, contact provider APIs, upload configuration, logs, or diagnostics, or collect telemetry. State and transaction files contain only the minimum patch, path, hash, phase, and owned-key metadata needed for recovery, never the complete configuration, credentials, or API requests.
-
-The scripts use the [MIT License](LICENSE). The official complete catalog downloaded at runtime comes from the Apache-2.0 [`openai/codex`](https://github.com/openai/codex) repository; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+The project uses the [MIT License](LICENSE). The catalog downloaded at runtime comes from the Apache-2.0 [`openai/codex`](https://github.com/openai/codex) repository; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
