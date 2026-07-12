@@ -70,14 +70,14 @@ assert_no_path() {
 }
 
 assert_contains() {
-  /usr/bin/grep -F "$2" "$1" >/dev/null || {
+  /usr/bin/grep -F -- "$2" "$1" >/dev/null || {
     printf '%s\n' "missing text [$2] in $1"
     return 1
   }
 }
 
 assert_not_contains() {
-  ! /usr/bin/grep -F "$2" "$1" >/dev/null || {
+  ! /usr/bin/grep -F -- "$2" "$1" >/dev/null || {
     printf '%s\n' "unexpected text [$2] in $1"
     return 1
   }
@@ -168,7 +168,7 @@ JXA
 json_get_value() {
   /usr/bin/osascript -l JavaScript - "$1" "$2" <<'JXA'
 ObjC.import('Foundation');
-function run(a){let e=Ref(),s=$.NSString.stringWithContentsOfFileEncodingError($(a[0]),$.NSUTF8StringEncoding,e),o=JSON.parse(s.js);for(let k of a[1].split('.'))o=o[k];return String(o);}
+function run(a){let e=Ref(),s=$.NSString.stringWithContentsOfFileEncodingError($(a[0]),$.NSUTF8StringEncoding,e),o=JSON.parse(s.js);for(let k of a[1].split('.'))o=o[k];return o === null || o === undefined ? '' : String(o);}
 JXA
 }
 
