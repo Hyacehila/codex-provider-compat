@@ -5,7 +5,7 @@
 set -u
 umask 077
 
-TOOL_VERSION=0.1.1
+TOOL_VERSION=0.2.0
 PATCH_ID=responses-lite-standard-tools
 MAX_CATALOG_BYTES=5242880
 MIN_CATALOG_MODELS=8
@@ -265,6 +265,7 @@ internal_test_hooks_authorized() {
   [ -z "${CODEX_PROVIDER_COMPAT_TEST_FAIL_STAGE:-}" ] || requested=1
   [ -z "${CODEX_PROVIDER_COMPAT_TEST_MUTATE_CONFIG_BEFORE_WRITE:-}" ] || requested=1
   [ -z "${CODEX_PROVIDER_COMPAT_TEST_SIGNAL_STAGE:-}" ] || requested=1
+  [ -z "${CODEX_PROVIDER_COMPAT_TEST_SIGNAL_KIND:-}" ] || requested=1
   [ -z "${CODEX_PROVIDER_COMPAT_TEST_TOCTOU:-}" ] || requested=1
   [ -z "${CODEX_PROVIDER_COMPAT_TEST_VERSIONS:-}" ] || requested=1
   [ "$requested" -eq 0 ] && return 0
@@ -272,6 +273,10 @@ internal_test_hooks_authorized() {
     warn 'internal test hook refused without the explicit test-only confirmation gate'
     return 1
   }
+  case "${CODEX_PROVIDER_COMPAT_TEST_SIGNAL_KIND:-TERM}" in
+    TERM|INT) ;;
+    *) warn 'invalid internal test signal kind'; return 1 ;;
+  esac
 }
 
 parse_args() {
@@ -284,12 +289,14 @@ parse_args() {
   CODEX_HOME_ARG_SET=0
   CODEX_VERSION=
   CATALOG_FILE=
-  ENABLE_WEB_SEARCH=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --yes) YES=1 ;;
       --dry-run) DRY_RUN=1 ;;
-      --enable-web-search) ENABLE_WEB_SEARCH=1 ;;
+      --enable-web-search)
+        warn '--enable-web-search was removed; this tool no longer manages Web Search'
+        return 1
+        ;;
       --codex-home)
         shift
         [ "$#" -gt 0 ] || return 1
@@ -539,7 +546,9 @@ jxa_config() {
   /usr/bin/osascript -l JavaScript - "$mode" "$config" "$output" "$catalog" "$enable" "$state" <<'JXA'
 ObjC.import('Foundation');
 const tracked = ['model_catalog_json', 'web_search', 'model', 'model_provider', 'openai_base_url'];
-const owned = ['model_catalog_json', 'web_search'];
+// v0.2.0 apply owns only model_catalog_json. web_search remains tracked solely
+// so legacy v0.1.x state can prove and roll back the old tool-owned "live" value.
+const owned = ['model_catalog_json'];
 function exists(p) { return $.NSFileManager.defaultManager.fileExistsAtPath($(p)); }
 function readRaw(p) {
   if (!exists(p)) return '';
@@ -824,6 +833,7 @@ function meta(a, pathExists) {
     current_provider:provider ? provider.value : null,
     current_catalog:mc ? mc.value : null,
     current_web_search:ws ? ws.value : null,
+    current_web_search_count:a.keys.web_search.length,
     openai_base_url_present:a.keys.openai_base_url.length > 0,
     openai_provider_table_present:a.openaiProviderTable
   };
@@ -834,15 +844,11 @@ function run(v) {
   let text;
   if (mode === 'apply') {
     text = setKey(a, 'model_catalog_json', quote(v[3].replace(/\\/g, '/')), false);
-    if (v[4] === '1') {
-      a = analyze(text);
-      text = setKey(a, 'web_search', '"live"', false);
-    }
   } else if (mode === 'rollback') {
     let st = JSON.parse(readRaw(v[5]));
     if (!st || !st.generated_catalog || !st.config) throw Error('invalid sanitized state');
     if (!m.current_catalog || m.current_catalog.replace(/\\/g, '/') !== st.generated_catalog.path.replace(/\\/g, '/')) throw Error('model_catalog_json drifted after apply');
-    if (st.config.web_search_modified && m.current_web_search !== 'live') throw Error('web_search drifted after apply');
+    if (st.config.web_search_modified && (m.current_web_search_count !== 1 || m.current_web_search !== 'live')) throw Error('web_search drifted after apply');
     let previousCatalogLiteral = st.config.previous_model_catalog_json_literal;
     if (!previousCatalogLiteral && st.config.previous_model_catalog_json_present) previousCatalogLiteral = quote(st.config.previous_model_catalog_json);
     text = setKey(a, 'model_catalog_json', previousCatalogLiteral || '', !st.config.previous_model_catalog_json_present);
@@ -1000,6 +1006,7 @@ function write(p, s) {
 }
 function run(a) {
   let m = read(a[0]), cm = read(a[1]);
+  let webSearchModified = a[17] === '1';
   let o = {
     schema_version:1,
     patch_version:a[3],
@@ -1018,10 +1025,10 @@ function run(a) {
       previous_model_catalog_json_present:m.previous_model_catalog_json_present,
       previous_model_catalog_json:m.previous_model_catalog_json,
       previous_model_catalog_json_literal:m.previous_model_catalog_json_literal,
-      web_search_modified:a[17] === '1',
-      previous_web_search_present:m.previous_web_search_present,
-      previous_web_search:m.previous_web_search,
-      previous_web_search_literal:m.previous_web_search_literal
+      web_search_modified:webSearchModified,
+      previous_web_search_present:webSearchModified ? m.previous_web_search_present : false,
+      previous_web_search:webSearchModified ? m.previous_web_search : null,
+      previous_web_search_literal:webSearchModified ? m.previous_web_search_literal : null
     },
     cache:{original_path:a[18], backup_path:a[19] || null, sha256:a[20] || null},
     other_lite_models:cm.other_lite || [],
@@ -1437,6 +1444,7 @@ state_health_core() {
   current=$(jxa_get "$TMP_ROOT/status-config-meta.json" current_catalog)
   [ "$current" = "$generated" ] || return 3
   if [ "$(jxa_get "$TMP_ROOT/state-safe.json" config.web_search_modified)" = true ]; then
+    [ "$(jxa_get "$TMP_ROOT/status-config-meta.json" current_web_search_count)" = 1 ] || return 3
     [ "$(jxa_get "$TMP_ROOT/status-config-meta.json" current_web_search)" = live ] || return 3
   fi
   return 0
@@ -1444,7 +1452,13 @@ state_health_core() {
 
 maybe_fail() {
   stage=$1
-  if [ "${CODEX_PROVIDER_COMPAT_TEST_SIGNAL_STAGE:-}" = "$stage" ]; then /bin/kill -TERM "$$"; fi
+  if [ "${CODEX_PROVIDER_COMPAT_TEST_SIGNAL_STAGE:-}" = "$stage" ]; then
+    case "${CODEX_PROVIDER_COMPAT_TEST_SIGNAL_KIND:-TERM}" in
+      INT) /bin/kill -INT "$$" ;;
+      TERM) /bin/kill -TERM "$$" ;;
+      *) return 1 ;;
+    esac
+  fi
   if [ "${CODEX_PROVIDER_COMPAT_TEST_CRASH_STAGE:-}" = "$stage" ]; then /bin/kill -KILL "$$"; fi
   [ "${CODEX_PROVIDER_COMPAT_TEST_FAIL_STAGE:-}" != "$stage" ]
 }
@@ -1677,7 +1691,7 @@ prepare_apply_config() {
   config="$CODEX_ROOT/config.toml"
   path_guard "$CODEX_ROOT" "$config" inside >/dev/null || return 1
   if [ -e "$config" ] || [ -L "$config" ]; then [ -f "$config" ] && [ ! -L "$config" ] || return 1; fi
-  meta=$(jxa_config apply "$config" "$TMP_ROOT/config.apply" "$generated" "$ENABLE_WEB_SEARCH") || return 1
+  meta=$(jxa_config apply "$config" "$TMP_ROOT/config.apply" "$generated" 0) || return 1
   printf '%s' "$meta" > "$TMP_ROOT/config-meta.json"
   PREPARED_CONFIG_HASH=$(config_fingerprint "$config")
   PREPARED_AFTER_HASH=$(sha256 "$TMP_ROOT/config.apply") || return 1
@@ -1704,7 +1718,7 @@ doctor() {
   path_guard "$CODEX_ROOT" "$config" inside >/dev/null || { info 'result=unsafe'; return $EX_UNSAFE; }
   meta=$(jxa_config analyze "$config" /dev/null) || { warn 'unsafe or unsupported config'; info 'result=unsafe'; return $EX_UNSAFE; }
   printf '%s' "$meta" > "$TMP_ROOT/meta.json"
-  for k in current_model current_provider current_catalog current_web_search; do info "$k=$(jxa_get "$TMP_ROOT/meta.json" "$k")"; done
+  for k in current_model current_provider current_catalog; do info "$k=$(jxa_get "$TMP_ROOT/meta.json" "$k")"; done
   if [ -f "$CODEX_ROOT/models_cache.json" ] && [ ! -L "$CODEX_ROOT/models_cache.json" ]; then info 'models_cache=present'; else info 'models_cache=missing'; fi
   configured_catalog=$(jxa_get "$TMP_ROOT/meta.json" current_catalog)
   if [ -n "$configured_catalog" ]; then
@@ -1836,7 +1850,6 @@ apply_cmd() {
   prepare_apply_config || { warn 'config validation failed'; return $EX_UNSAFE; }
   info "plan: generate $generated"
   info "plan: backup and update $CODEX_ROOT/config.toml"
-  [ "$ENABLE_WEB_SEARCH" -eq 1 ] && info 'plan: set web_search = "live"'
   if [ "$DRY_RUN" -eq 1 ]; then info 'result=dry-run (zero writes)'; return 0; fi
   confirm_write 'Apply responses-lite-standard-tools?' || return $EX_ERROR
   ensure_home || return $EX_UNSAFE
@@ -1904,7 +1917,7 @@ apply_cmd() {
   state="$CODEX_ROOT/provider-compat-state.json"
   source_sha=$(sha256 "$SOURCE_PATH")
   model_count=$(jxa_get "$TMP_ROOT/catalog-meta.json" model_count)
-  jxa_write_state "$TMP_ROOT/config-meta.json" "$TMP_ROOT/catalog-meta.json" "$TMP_ROOT/state.new" "$TOOL_VERSION" "$PATCH_ID" "$SELECTED_VERSION" "$SOURCE_KIND" "$SOURCE_URL" "$SOURCE_PATH" "$source_sha" "$model_count" "$generated" "$generated_sha" "$config" "$backup" "$before_sha" "$original_mode" "$ENABLE_WEB_SEARCH" "$cache" "$cache_backup" "$cache_hash" || return $EX_UNSAFE
+  jxa_write_state "$TMP_ROOT/config-meta.json" "$TMP_ROOT/catalog-meta.json" "$TMP_ROOT/state.new" "$TOOL_VERSION" "$PATCH_ID" "$SELECTED_VERSION" "$SOURCE_KIND" "$SOURCE_URL" "$SOURCE_PATH" "$source_sha" "$model_count" "$generated" "$generated_sha" "$config" "$backup" "$before_sha" "$original_mode" 0 "$cache" "$cache_backup" "$cache_hash" || return $EX_UNSAFE
   state_sha=$(sha256 "$TMP_ROOT/state.new")
   write_transaction apply prepared "$LOCK_NONCE" "$CODEX_ROOT" "$SELECTED_VERSION" "$config" "$backup" '' "$generated" '' "$cache" "$cache_backup" "$state" '' "$before_sha" "$PREPARED_AFTER_HASH" "$generated_sha" "$cache_hash" "$state_sha" "$([ "$existed" = true ] && printf 1 || printf 0)" 0 0 0 || return $EX_UNSAFE
   maybe_fail after-journal || { recover_transaction; return $EX_UNSAFE; }

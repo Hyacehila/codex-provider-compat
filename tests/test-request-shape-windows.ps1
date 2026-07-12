@@ -7,10 +7,10 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
 
 $script:ExpectedCodexVersion = '0.144.1'
 $script:ExpectedCatalogSha256 = 'DCAB00231A5178A9C84B7AEF4CC06A1E1359E37EE0DD7E69D5822C4B1DE723B1'
-$script:CatalogUrl = 'https://raw.githubusercontent.com/openai/codex/rust-v0.144.1/codex-rs/models-manager/models.json'
 $script:TargetModels = @('gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna')
 $script:RepoRoot = Split-Path -Parent $PSScriptRoot
 $script:ToolPath = Join-Path $script:RepoRoot 'codex-provider-compat.ps1'
+$script:CatalogFixturePath = Join-Path $PSScriptRoot 'fixtures\models-0.144.1-official.json'
 $script:PowerShellPath = (Get-Process -Id $PID).Path
 
 function Assert-True($Value, [string]$Message) {
@@ -145,54 +145,11 @@ function Remove-SafeTestTree([string]$Path) {
 }
 
 function Get-PinnedCatalog([string]$Destination) {
-    Add-Type -AssemblyName System.Net.Http
-    $handler = [Net.Http.HttpClientHandler]::new()
-    $handler.AllowAutoRedirect = $false
-    $client = [Net.Http.HttpClient]::new($handler)
-    $client.Timeout = [Threading.Timeout]::InfiniteTimeSpan
-    $cts = [Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(30))
-    $response = $null
-    $stream = $null
-    $memory = $null
-    try {
-        $response = $client.GetAsync(
-            $script:CatalogUrl,
-            [Net.Http.HttpCompletionOption]::ResponseHeadersRead,
-            $cts.Token
-        ).GetAwaiter().GetResult()
-        try {
-            if ([int]$response.StatusCode -ne 200) {
-                throw "pinned catalog download returned HTTP $([int]$response.StatusCode)"
-            }
-            if ($response.Headers.Location) { throw 'pinned catalog download unexpectedly redirected' }
-            if ($response.Content.Headers.ContentLength -and $response.Content.Headers.ContentLength -gt 5MB) {
-                throw 'pinned catalog response exceeded the 5 MiB limit'
-            }
-            $stream = $response.Content.ReadAsStreamAsync($cts.Token).GetAwaiter().GetResult()
-            $memory = [IO.MemoryStream]::new()
-            $buffer = New-Object byte[] 65536
-            while (($read = $stream.ReadAsync($buffer, 0, $buffer.Length, $cts.Token).GetAwaiter().GetResult()) -gt 0) {
-                $memory.Write($buffer, 0, $read)
-                if ($memory.Length -gt 5MB) { throw 'pinned catalog response exceeded the 5 MiB limit' }
-            }
-            $bytes = $memory.ToArray()
-            if ($null -ne $response.Content.Headers.ContentLength -and
-                $bytes.Length -ne [long]$response.Content.Headers.ContentLength) {
-                throw 'pinned catalog response was truncated'
-            }
-        } finally {
-            if ($memory) { $memory.Dispose() }
-            if ($stream) { $stream.Dispose() }
-            $response.Dispose()
-        }
-    } catch [OperationCanceledException] {
-        throw 'pinned catalog download timed out'
-    } finally {
-        $cts.Dispose()
-        $client.Dispose()
-        $handler.Dispose()
-    }
-    Assert-True ($bytes.Length -gt 0 -and $bytes.Length -le 5MB) 'pinned catalog response size is invalid'
+    Assert-True (Test-Path -LiteralPath $script:CatalogFixturePath -PathType Leaf) 'pinned official catalog fixture is missing'
+    $fixtureItem=Get-Item -LiteralPath $script:CatalogFixturePath -Force
+    Assert-True (($fixtureItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) 'pinned official catalog fixture must not be a reparse point'
+    $bytes=[IO.File]::ReadAllBytes($script:CatalogFixturePath)
+    Assert-True ($bytes.Length -gt 0 -and $bytes.Length -le 5MB) 'pinned catalog fixture size is invalid'
     Assert-Equal $script:ExpectedCatalogSha256 (Get-Sha256Bytes $bytes) 'pinned official catalog hash'
     [IO.File]::WriteAllBytes($Destination, $bytes)
 
@@ -473,11 +430,13 @@ function Stop-LocalMock($Server, [bool]$ReadCapture) {
     return $capture
 }
 
-function New-TestConfig([int]$Port) {
+function New-TestConfig([int]$Port, [string]$WebSearchMode = $null) {
+    if($WebSearchMode -and $WebSearchMode -ne 'live'){throw "unsupported request-shape Web Search fixture mode: $WebSearchMode"}
+    $webSearchLine=if($WebSearchMode){"web_search = `"$WebSearchMode`""}else{''}
     return @"
 model = "gpt-5.6-sol"
 model_provider = "mock"
-web_search = "live"
+$webSearchLine
 check_for_update_on_startup = false
 openai_base_url = "http://127.0.0.1:$Port/v1"
 chatgpt_base_url = "http://127.0.0.1:$Port"
@@ -506,7 +465,6 @@ remote_compaction_v2 = false
 responses_websockets = false
 responses_websockets_v2 = false
 shell_snapshot = false
-standalone_web_search = false
 
 [model_providers.mock]
 name = "provider-compat-localhost-test"
@@ -565,7 +523,7 @@ function Assert-LiteShape($Record) {
     return [pscustomobject]@{ Body=$body; Tools=$tools }
 }
 
-function Assert-StandardShape($Record, $LiteTools) {
+function Assert-StandardShape($Record, $LiteTools, [bool]$ExpectHostedWebSearch) {
     Assert-True ([string]::IsNullOrWhiteSpace([string]$Record.responses_lite_header)) 'standard request must omit the Lite header'
     $body = $Record.body | ConvertFrom-Json
     Assert-Equal 'gpt-5.6-sol' $body.model 'standard request model'
@@ -579,14 +537,15 @@ function Assert-StandardShape($Record, $LiteTools) {
     $tools = @($body.tools)
     Assert-True ($tools.Count -gt 0) 'standard top-level tools is empty'
     $hostedWeb = @($tools | Where-Object type -eq 'web_search')
-    Assert-Equal 1 $hostedWeb.Count 'standard request must include exactly one hosted web_search'
+    $expectedHostedWebCount = if ($ExpectHostedWebSearch) { 1 } else { 0 }
+    Assert-Equal $expectedHostedWebCount $hostedWeb.Count 'standard hosted web_search count does not match the user configuration'
     Assert-True (@($tools | Where-Object { (Test-JsonProperty $_ 'name') -and $_.name -in @('exec', 'shell') }).Count -gt 0) 'standard request must include exec/shell capability'
     Assert-Equal 1 @($tools | Where-Object { $_.type -eq 'custom' -and $_.name -eq 'exec' -and $_.description -like '*orchestrate/compose tool calls*' }).Count 'standard request must include the code-mode exec orchestrator'
     Assert-True (@($tools | Where-Object type -eq 'function').Count -gt 0) 'standard request must include ordinary function tools'
     Assert-Equal 1 @($tools | Where-Object { $_.type -eq 'namespace' -and $_.name -eq 'collaboration' }).Count 'standard request must include collaboration namespace'
 
     $clientTools = @($tools | Where-Object type -ne 'web_search')
-    Assert-Equal $LiteTools.Count $clientTools.Count 'hosted web_search must be the only added standard tool'
+    Assert-Equal $LiteTools.Count $clientTools.Count 'standard client-tool count differs from Lite additional_tools'
     $liteCanonical = @($LiteTools | ForEach-Object { ConvertTo-CanonicalJsonFragment $_ } | Sort-Object)
     $standardCanonical = @($clientTools | ForEach-Object { ConvertTo-CanonicalJsonFragment $_ } | Sort-Object)
     Assert-Equal ($liteCanonical -join "`n") ($standardCanonical -join "`n") 'Lite and standard client-tool definitions differ'
@@ -598,6 +557,7 @@ $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('codex-provider-compat-shape-'
 $codexHome = Join-Path $testRoot 'home'
 $server1 = $null
 $server2 = $null
+$server3 = $null
 $failure = $null
 
 try {
@@ -632,7 +592,7 @@ try {
 
     $apply = Invoke-CompatTool $codexHome @(
         'apply', '--yes', '--codex-home', $codexHome, '--codex-version', $script:ExpectedCodexVersion,
-        '--catalog-file', $officialCatalog, '--enable-web-search'
+        '--catalog-file', $officialCatalog
     )
     Assert-Equal 0 $apply.ExitCode (Format-ProcessResult $apply)
     Assert-True $apply.Stdout.Contains('result=applied') (Format-ProcessResult $apply)
@@ -640,9 +600,12 @@ try {
     Assert-True (Test-Path -LiteralPath $statePath -PathType Leaf) 'apply did not create state'
     $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
     Assert-Equal 'responses-lite-standard-tools' $state.patch_id 'state patch_id'
+    Assert-Equal '0.2.0' $state.patch_version 'state patch_version'
     Assert-Equal $script:ExpectedCodexVersion $state.codex_version 'state Codex version'
     Assert-Equal $script:ExpectedCatalogSha256 ([string]$state.source_catalog.sha256).ToUpperInvariant() 'state source catalog hash'
     Assert-True (Test-Path -LiteralPath $state.generated_catalog.path -PathType Leaf) 'generated catalog is missing'
+    Assert-Equal $false $state.config.web_search_modified 'new apply must not own the user Web Search setting'
+    Assert-Equal $false $state.config.previous_web_search_present 'new apply must not record the user Web Search setting'
     Write-Host 'PASS apply with the complete official catalog'
 
     $status = Invoke-CompatTool $codexHome @('status', '--codex-home', $codexHome, '--codex-version', $script:ExpectedCodexVersion)
@@ -653,9 +616,9 @@ try {
     $null = Invoke-CodexTurn $codexBinary $codexHome
     $capture2 = Stop-LocalMock $server2 $true
     $record2 = Get-SingleResponseRecord $capture2 $server2.Port
-    $null = Assert-StandardShape $record2 $lite.Tools
+    $null = Assert-StandardShape $record2 $lite.Tools $true
     $server2 = $null
-    Write-Host 'PASS patched standard Responses request shape and normalized tool set'
+    Write-Host 'PASS patched standard Responses core request shape without explicit Web Search configuration'
 
     $generatedCatalog = [string]$state.generated_catalog.path
     $rollback = Invoke-CompatTool $codexHome @('rollback', '--yes', '--codex-home', $codexHome)
@@ -668,11 +631,42 @@ try {
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $codexHome 'provider-compat-transaction.json'))) 'rollback left an active transaction journal'
     Assert-Equal 1 @(Get-ChildItem -LiteralPath $codexHome -Filter 'provider-compat-state.json.rolled-back-*' -File).Count 'rollback state archive count'
     Write-Host 'PASS rollback restored config, cache, catalog, state, and transaction state'
+
+    $searchHome = Join-Path $testRoot 'search-home'
+    [IO.Directory]::CreateDirectory($searchHome) | Out-Null
+    $server3 = Start-LocalMock $testRoot 'standard-search'
+    $searchConfigPath = Join-Path $searchHome 'config.toml'
+    [IO.File]::WriteAllText($searchConfigPath, (New-TestConfig $server3.Port 'live'), [Text.UTF8Encoding]::new($false))
+    $searchConfigHash = Get-Sha256File $searchConfigPath
+    $searchApply = Invoke-CompatTool $searchHome @(
+        'apply', '--yes', '--codex-home', $searchHome, '--codex-version', $script:ExpectedCodexVersion,
+        '--catalog-file', $officialCatalog
+    )
+    Assert-Equal 0 $searchApply.ExitCode (Format-ProcessResult $searchApply)
+    $searchStatePath = Join-Path $searchHome 'provider-compat-state.json'
+    $searchState = Get-Content -LiteralPath $searchStatePath -Raw | ConvertFrom-Json
+    Assert-Equal $false $searchState.config.web_search_modified 'optional search apply unexpectedly owned web_search'
+    Assert-Equal $false $searchState.config.previous_web_search_present 'optional search apply recorded the user Web Search setting'
+    $null = Invoke-CodexTurn $codexBinary $searchHome
+    $capture3 = Stop-LocalMock $server3 $true
+    $record3 = Get-SingleResponseRecord $capture3 $server3.Port
+    $null = Assert-StandardShape $record3 $lite.Tools $true
+    $server3 = $null
+    Write-Host 'PASS user-configured live Web Search adds only the hosted web_search tool'
+
+    $searchGeneratedCatalog = [string]$searchState.generated_catalog.path
+    $searchRollback = Invoke-CompatTool $searchHome @('rollback', '--yes', '--codex-home', $searchHome)
+    Assert-Equal 0 $searchRollback.ExitCode (Format-ProcessResult $searchRollback)
+    Assert-Equal $searchConfigHash (Get-Sha256File $searchConfigPath) 'optional search rollback changed the user Web Search setting'
+    Assert-True (-not (Test-Path -LiteralPath $searchGeneratedCatalog)) 'optional search rollback left the generated catalog'
+    Assert-True (-not (Test-Path -LiteralPath $searchStatePath)) 'optional search rollback left active state'
+    Write-Host 'PASS optional search rollback preserved the user-owned config exactly'
 } catch {
     $failure = $_
 } finally {
     if ($server1) { try { $null = Stop-LocalMock $server1 $false } catch {} }
     if ($server2) { try { $null = Stop-LocalMock $server2 $false } catch {} }
+    if ($server3) { try { $null = Stop-LocalMock $server3 $false } catch {} }
     $realHomeAfter = Get-RealHomeSnapshot
     if ($realHomeBefore -ne $realHomeAfter -and -not $failure) {
         $failure = [Management.Automation.ErrorRecord]::new(
@@ -688,5 +682,5 @@ if ($failure) {
 }
 
 Write-Host 'PASS real Codex home hashes unchanged'
-Write-Host 'Request-shape integration test: passed=8 failed=0'
+Write-Host 'Request-shape integration test: passed=10 failed=0'
 exit 0

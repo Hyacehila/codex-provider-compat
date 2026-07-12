@@ -76,41 +76,38 @@ function Assert-PackageReadme {
         'status',
         'rollback',
         '--dry-run',
-        '--enable-web-search',
-        'instead of plain `apply` on the first installation',
-        'run `rollback` first',
         'completely quit and restart Codex',
         'create a new task/thread',
-        'Search may incur provider charges',
+        'does not enable, disable, or manage individual tools',
         'recovery-required',
         'After every Codex update',
         'unofficial community tool',
         'cannot make a provider implement',
         '完全退出并重新启动 Codex',
         '新建任务/thread',
-        '搜索可能产生 provider 费用',
+        '不会开启、关闭或管理任何单项工具',
         '每次 Codex 更新后'
     )) {
         Assert-True ($text.Contains($required)) "$Platform package README is missing required guidance: $required"
     }
 
     if ($Platform -eq 'windows') {
-        foreach ($required in @('Get-FileHash', 'powershell.exe', 'codex-provider-compat.ps1', 'codex-provider-compat-v0.1.1-windows.zip')) {
+        foreach ($required in @('Get-FileHash', 'powershell.exe', 'codex-provider-compat.ps1', 'codex-provider-compat-v0.2.0-windows.zip')) {
             Assert-True ($text.Contains($required)) "Windows package README is missing: $required"
         }
-        Assert-True (-not $text.Contains('codex-provider-compat-v0.1.1-macos.zip')) 'Windows package README must not direct users to the macOS archive'
+        Assert-True (-not $text.Contains('codex-provider-compat-v0.2.0-macos.zip')) 'Windows package README must not direct users to the macOS archive'
     }
     else {
-        foreach ($required in @('shasum -a 256', 'chmod +x', 'codex-provider-compat.sh', 'codex-provider-compat-v0.1.1-macos.zip')) {
+        foreach ($required in @('shasum -a 256', 'chmod +x', 'codex-provider-compat.sh', 'codex-provider-compat-v0.2.0-macos.zip')) {
             Assert-True ($text.Contains($required)) "macOS package README is missing: $required"
         }
-        Assert-True (-not $text.Contains('codex-provider-compat-v0.1.1-windows.zip')) 'macOS package README must not direct users to the Windows archive'
+        Assert-True (-not $text.Contains('codex-provider-compat-v0.2.0-windows.zip')) 'macOS package README must not direct users to the Windows archive'
     }
 }
 
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $builder = Join-Path $repoRoot 'scripts/build-release.ps1'
-$version = '0.1.1'
+$version = '0.2.0'
 $prefix = "codex-provider-compat-v$version"
 $expectedAssets = @(
     'codex-provider-compat.ps1',
@@ -159,7 +156,7 @@ try {
     $null = New-Item -ItemType Directory -Path $mismatchOutput
     $mismatchFailed = $false
     try {
-        & $builder -Version '0.1.2' -OutputDirectory $mismatchOutput
+        & $builder -Version '0.2.1' -OutputDirectory $mismatchOutput
     }
     catch {
         $mismatchFailed = $true
@@ -210,6 +207,8 @@ try {
         $windowsRoot = "$prefix-windows"
         $expectedWindowsNames = @(
             "$windowsRoot/LICENSE",
+            "$windowsRoot/LICENSES/Apache-2.0.txt",
+            "$windowsRoot/LICENSES/OpenAI-Codex-NOTICE.txt",
             "$windowsRoot/README.md",
             "$windowsRoot/THIRD_PARTY_NOTICES.md",
             "$windowsRoot/codex-provider-compat.ps1"
@@ -229,6 +228,8 @@ try {
         $macosRoot = "$prefix-macos"
         $expectedMacosNames = @(
             "$macosRoot/LICENSE",
+            "$macosRoot/LICENSES/Apache-2.0.txt",
+            "$macosRoot/LICENSES/OpenAI-Codex-NOTICE.txt",
             "$macosRoot/README.md",
             "$macosRoot/THIRD_PARTY_NOTICES.md",
             "$macosRoot/codex-provider-compat.sh"

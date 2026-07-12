@@ -4,11 +4,11 @@
 # Copyright (c) 2026 codex-provider-compat contributors
 
 $ErrorActionPreference = 'Stop'
-$script:ToolVersion = '0.1.1'
+$script:ToolVersion = '0.2.0'
 $script:PatchId = 'responses-lite-standard-tools'
 $script:TargetModels = @('gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna')
 $script:TrackedConfigKeys = @('model_catalog_json', 'web_search', 'model', 'model_provider', 'openai_base_url')
-$script:OwnedConfigKeys = @('model_catalog_json', 'web_search')
+$script:OwnedConfigKeys = @('model_catalog_json')
 $script:MaxCatalogBytes = 5MB
 $script:MinCatalogModels = 8
 $script:MinNonTargetModels = 5
@@ -558,11 +558,16 @@ function Get-ConfigAnalysisFromText([string]$Path, [bool]$Exists, [string]$Text,
         $commentIndex=Scan-TomlFragment $line ($assignment.EqualsIndex+1) $valueState
         $isTracked=$topLevel -and $assignment.Parts.Count -eq 1 -and $first -in $script:TrackedConfigKeys
         if($isTracked){
-            if($valueState.Mode -ne 'normal' -or $valueState.SquareDepth -ne 0 -or $valueState.CurlyDepth -ne 0){throw "top-level $first must use a simple single-line value"}
-            $valueEnd=if($commentIndex -ge 0){$commentIndex}else{$line.Length}
-            $raw=$line.Substring($assignment.EqualsIndex+1,$valueEnd-$assignment.EqualsIndex-1).Trim()
-            if([string]::IsNullOrWhiteSpace($raw)){throw "top-level $first has an empty value"}
-            [void]$keys[$first].Add([pscustomobject]@{Index=$index;Line=$line;Raw=$raw;Value=(ConvertFrom-TomlSimpleValue $raw);EqualsIndex=$assignment.EqualsIndex;CommentIndex=$commentIndex})
+            $isSimpleValue=$valueState.Mode -eq 'normal' -and $valueState.SquareDepth -eq 0 -and $valueState.CurlyDepth -eq 0
+            if(-not$isSimpleValue){
+                if($first -ne 'web_search'){throw "top-level $first must use a simple single-line value"}
+            }else{
+                $valueEnd=if($commentIndex -ge 0){$commentIndex}else{$line.Length}
+                $raw=$line.Substring($assignment.EqualsIndex+1,$valueEnd-$assignment.EqualsIndex-1).Trim()
+                if([string]::IsNullOrWhiteSpace($raw)){throw "top-level $first has an empty value"}
+                $isCompleteMultilineWebString=$first-eq'web_search'-and(($raw.StartsWith('"""',[StringComparison]::Ordinal)-and$raw.EndsWith('"""',[StringComparison]::Ordinal))-or($raw.StartsWith("'''",[StringComparison]::Ordinal)-and$raw.EndsWith("'''",[StringComparison]::Ordinal)))
+                if(-not$isCompleteMultilineWebString){$parsedValue=ConvertFrom-TomlSimpleValue $raw;[void]$keys[$first].Add([pscustomobject]@{Index=$index;Line=$line;Raw=$raw;Value=$parsedValue;EqualsIndex=$assignment.EqualsIndex;CommentIndex=$commentIndex})}
+            }
         }
         $state=$valueState
     }
@@ -614,10 +619,9 @@ function Set-ConfigKey($Analysis,[string]$Key,[string]$Literal,[bool]$ShouldRemo
     return Convert-RecordsToText @($records)
 }
 
-function Get-ConfigPlan([string]$ConfigPath,[string]$GeneratedPath,[bool]$EnableWebSearch){
+function Get-ConfigPlan([string]$ConfigPath,[string]$GeneratedPath){
     $analysis=Get-ConfigAnalysis $ConfigPath;Assert-NoDuplicateOwnedKeys $analysis
     $text=Set-ConfigKey $analysis 'model_catalog_json' (Quote-TomlString $GeneratedPath) $false
-    if($EnableWebSearch){$next=Get-ConfigAnalysisFromText $ConfigPath $analysis.Exists $text $analysis.Bom $analysis.Newline $null $analysis.Acl;$text=Set-ConfigKey $next 'web_search' '"live"' $false}
     return [pscustomobject]@{Analysis=$analysis;Text=$text;AfterBytes=(ConvertTo-Utf8Bytes $text $analysis.Bom);Fingerprint=if($analysis.Exists){$analysis.Sha256}else{'<missing>'}}
 }
 
@@ -968,13 +972,11 @@ function Parse-Arguments([string[]]$InputArgs) {
         CodexVersionSet = $false
         CatalogFile = $null
         CatalogFileSet = $false
-        EnableWebSearch = $false
     }
     for ($i = 1; $i -lt $InputArgs.Count; $i++) {
         switch ($InputArgs[$i]) {
             '--yes' { $result.Yes = $true }
             '--dry-run' { $result.DryRun = $true }
-            '--enable-web-search' { $result.EnableWebSearch = $true }
             '--codex-home' {
                 if (++$i -ge $InputArgs.Count) { throw '--codex-home requires a value' }
                 $result.CodexHomeSet = $true
@@ -1013,12 +1015,12 @@ function Invoke-Doctor($Options,[string]$CodexRoot){
     $versions=Discover-CodexVersions $CodexRoot;Show-Versions $versions;try{$version=Select-CodexVersion $Options.CodexVersion $versions $false}catch{Write-Warn $_.Exception.Message;Write-Info 'result=unsafe';return $script:ExitUnsafe}
     try{$state=Read-State $CodexRoot}catch{Write-Warn $_.Exception.Message;Write-Info 'result=unsafe';return $script:ExitUnsafe}
     if($state){$health=Test-StateHealth $CodexRoot $state $version;if($health.Count-eq0){Write-Info 'result=already-applied';return $script:ExitSuccess};if($health-contains'codex-version-stale'){Write-Warn('status problems: '+($health-join', '));Write-Info 'result=stale';return $script:ExitStale};Write-Warn('status problems: '+($health-join', '));Write-Info 'result=unsafe';return $script:ExitUnsafe}
-    $configPath=Join-Path $CodexRoot 'config.toml';try{$analysis=Get-ConfigAnalysis $configPath;Assert-NoDuplicateOwnedKeys $analysis;foreach($key in @('model','model_provider','model_catalog_json','web_search')){if($analysis.Keys[$key].Count-eq1){Write-Info "$key=$($analysis.Keys[$key][0].Value)"}else{Write-Info "$key=<unset>"}}}catch{Write-Warn $_.Exception.Message;Write-Info 'result=unsafe';return $script:ExitUnsafe}
+    $configPath=Join-Path $CodexRoot 'config.toml';try{$analysis=Get-ConfigAnalysis $configPath;Assert-NoDuplicateOwnedKeys $analysis;foreach($key in @('model','model_provider','model_catalog_json')){if($analysis.Keys[$key].Count-eq1){Write-Info "$key=$($analysis.Keys[$key][0].Value)"}else{Write-Info "$key=<unset>"}}}catch{Write-Warn $_.Exception.Message;Write-Info 'result=unsafe';return $script:ExitUnsafe}
     Show-ProfileWarnings $CodexRoot
     if(-not $version-and-not$Options.CatalogFile){Write-Info 'result=unknown';return $script:ExitUnsafe}
     try{$source=Get-CatalogSource $Options.CatalogFile $version}catch{Write-Warn $_.Exception.Message;Write-Info 'result=unknown';if($Options.CatalogFile){return $script:ExitUnsafe};return $script:ExitNetwork}
     try{$catalog=Read-CatalogSource $source}catch{Write-Warn $_.Exception.Message;if($source.Kind-eq'official-github-tag'){Write-Info 'result=stale';return $script:ExitStale};Write-Info 'result=unsafe';return $script:ExitUnsafe}
-    Write-Info "catalog_source=$($source.Kind) models=$($catalog.ModelCount) sha256=$($catalog.SourceSha256)";foreach($target in $script:TargetModels){Write-Info "$target use_responses_lite=$($catalog.OriginalStates[$target])"};if($catalog.OtherLite.Count){Write-Warn('unverified Lite models (reported only): '+($catalog.OtherLite-join', '))};Write-Info 'capability_risk=hosted-web-search,exec-shell,code-mode,function-mcp,dynamic-tools,collaboration,image-extension'
+    Write-Info "catalog_source=$($source.Kind) models=$($catalog.ModelCount) sha256=$($catalog.SourceSha256)";foreach($target in $script:TargetModels){Write-Info "$target use_responses_lite=$($catalog.OriginalStates[$target])"};if($catalog.OtherLite.Count){Write-Warn('unverified Lite models (reported only): '+($catalog.OtherLite-join', '))};Write-Info 'capability_risk=exec-shell,code-mode,function-mcp,dynamic-tools,collaboration,image-extension,hosted-web-search'
     if($catalog.AllTargetsAlreadyFalse){Write-Info 'result=not-needed';return $script:ExitNotApplicable}
     if($analysis.Keys.model.Count-ne1-or$analysis.Keys.model_provider.Count-ne1){Write-Info 'result=unknown (model or model_provider is unset)';return $script:ExitUnsafe}
     if($analysis.Keys.model[0].Value-notin$script:TargetModels){Write-Info 'result=not-needed (current model is not a verified target)';return $script:ExitNotApplicable}
@@ -1043,8 +1045,8 @@ function Invoke-Apply($Options,[string]$CodexRoot){
     try{$catalog=Read-CatalogSource $source}catch{Write-Warn $_.Exception.Message;if($source.Kind-eq'official-github-tag'){return $script:ExitStale};return $script:ExitUnsafe}
     if($catalog.AllTargetsAlreadyFalse){Write-Info 'result=not-needed (official/source catalog already uses standard Responses)';return $script:ExitNotApplicable}
     $configPath=Join-Path $CodexRoot 'config.toml';$catalogDir=Join-Path $CodexRoot 'model-catalogs';$generatedPath=Join-Path $catalogDir "models-$version.standard-responses-compat.json"
-    try{Assert-SafeOwnedPath $CodexRoot $configPath|Out-Null;Assert-SafeOwnedPath $CodexRoot $catalogDir|Out-Null;Assert-SafeOwnedPath $CodexRoot $generatedPath|Out-Null;$plan=Get-ConfigPlan $configPath $generatedPath $Options.EnableWebSearch}catch{Write-Warn $_.Exception.Message;return $script:ExitUnsafe}
-    Write-Info "plan: generate $generatedPath";Write-Info "plan: backup and update $configPath";if($Options.EnableWebSearch){Write-Info 'plan: set web_search = "live"'};if(Test-Path -LiteralPath (Join-Path $CodexRoot 'models_cache.json')){Write-Info 'plan: rename-backup models_cache.json'}
+    try{Assert-SafeOwnedPath $CodexRoot $configPath|Out-Null;Assert-SafeOwnedPath $CodexRoot $catalogDir|Out-Null;Assert-SafeOwnedPath $CodexRoot $generatedPath|Out-Null;$plan=Get-ConfigPlan $configPath $generatedPath}catch{Write-Warn $_.Exception.Message;return $script:ExitUnsafe}
+    Write-Info "plan: generate $generatedPath";Write-Info "plan: backup and update $configPath";if(Test-Path -LiteralPath (Join-Path $CodexRoot 'models_cache.json')){Write-Info 'plan: rename-backup models_cache.json'}
     if($Options.DryRun){Write-Info 'result=dry-run (zero writes)';return $script:ExitSuccess}
     for($attempt=0;$attempt-lt2;$attempt++){
         if(-not(Confirm-Write $Options 'Apply responses-lite-standard-tools?')){Write-Info 'cancelled';return $script:ExitError};Invoke-TestConfigMutation $configPath
@@ -1055,12 +1057,12 @@ function Invoke-Apply($Options,[string]$CodexRoot){
             if(Read-Transaction $CodexRoot){throw 'another transaction appeared while acquiring the lock'}
             $stateNow=Read-State $CodexRoot;if($stateNow){$health=Test-StateHealth $CodexRoot $stateNow $version;if($health.Count-eq0){Write-Info 'result=already-applied';return $script:ExitSuccess};throw 'patch state appeared while waiting for the lock'}
             $current=Get-ConfigAnalysis $configPath;$fingerprint=if($current.Exists){$current.Sha256}else{'<missing>'}
-            if($fingerprint-ne$plan.Fingerprint){if($attempt-eq0){Write-Warn 'config.toml changed after confirmation; rebuilding the plan once';$plan=Get-ConfigPlan $configPath $generatedPath $Options.EnableWebSearch;continue};throw 'config.toml changed repeatedly while applying; refusing to overwrite it'}
+            if($fingerprint-ne$plan.Fingerprint){if($attempt-eq0){Write-Warn 'config.toml changed after confirmation; rebuilding the plan once';$plan=Get-ConfigPlan $configPath $generatedPath;continue};throw 'config.toml changed repeatedly while applying; refusing to overwrite it'}
             if($current.Exists -and ((Get-Item -LiteralPath $configPath -Force).Attributes -band [IO.FileAttributes]::ReadOnly)){throw 'config.toml is read-only'}
             if(-not(Test-Path -LiteralPath $catalogDir)){[IO.Directory]::CreateDirectory($catalogDir)|Out-Null};Assert-SafeOwnedPath $CodexRoot $catalogDir|Out-Null;if(Test-Path -LiteralPath $generatedPath){throw "generated catalog already exists without a healthy state file: $generatedPath"}
             $stamp=Get-Date -Format 'yyyyMMdd-HHmmss';$nonce=[string]$lock.Nonce;Assert-OperationNonce $nonce 'operation lock nonce';$configBackup=if($plan.Analysis.Exists){Get-UniquePath(Join-Path $CodexRoot "config.toml.bak-provider-compat-$stamp")}else{$null};$cachePath=Join-Path $CodexRoot 'models_cache.json';Assert-SafeOwnedPath $CodexRoot $cachePath|Out-Null;$cacheExists=Test-Path -LiteralPath $cachePath -PathType Leaf;$cacheBackup=if($cacheExists){Get-UniquePath(Join-Path $CodexRoot "models_cache.json.bak-provider-compat-$stamp")}else{$null};$cacheHash=if($cacheExists){Get-Sha256 $cachePath}else{$null}
-            $previousCatalog=$plan.Analysis.Keys.model_catalog_json;$previousWeb=$plan.Analysis.Keys.web_search;$configBeforeHash=if($plan.Analysis.Exists){$plan.Analysis.Sha256}else{$null}
-            $state=[ordered]@{schema_version=1;patch_version=$script:ToolVersion;patch_id=$script:PatchId;codex_version=$version;source_catalog=[ordered]@{kind=$source.Kind;url=$source.Url;path=if($source.Kind-eq'local-file'){$source.Path}else{$null};sha256=$catalog.SourceSha256;model_count=$catalog.ModelCount};generated_catalog=[ordered]@{path=$generatedPath;sha256=(Get-BytesSha256 $catalog.PatchedBytes)};config=[ordered]@{path=$configPath;backup_path=$configBackup;before_sha256=$configBeforeHash;existed=$plan.Analysis.Exists;had_bom=$plan.Analysis.Bom;newline=if($plan.Analysis.Newline-eq"`r`n"){'crlf'}else{'lf'};original_mode=$null;previous_model_catalog_json_present=($previousCatalog.Count-eq1);previous_model_catalog_json=if($previousCatalog.Count-eq1){$previousCatalog[0].Value}else{$null};previous_model_catalog_json_literal=if($previousCatalog.Count-eq1){$previousCatalog[0].Raw}else{$null};web_search_modified=[bool]$Options.EnableWebSearch;previous_web_search_present=($previousWeb.Count-eq1);previous_web_search=if($previousWeb.Count-eq1){$previousWeb[0].Value}else{$null};previous_web_search_literal=if($previousWeb.Count-eq1){$previousWeb[0].Raw}else{$null}};cache=[ordered]@{original_path=$cachePath;backup_path=$cacheBackup;sha256=$cacheHash};other_lite_models=@($catalog.OtherLite);applied_at=[DateTimeOffset]::Now.ToString('o')}
+            $previousCatalog=$plan.Analysis.Keys.model_catalog_json;$configBeforeHash=if($plan.Analysis.Exists){$plan.Analysis.Sha256}else{$null}
+            $state=[ordered]@{schema_version=1;patch_version=$script:ToolVersion;patch_id=$script:PatchId;codex_version=$version;source_catalog=[ordered]@{kind=$source.Kind;url=$source.Url;path=if($source.Kind-eq'local-file'){$source.Path}else{$null};sha256=$catalog.SourceSha256;model_count=$catalog.ModelCount};generated_catalog=[ordered]@{path=$generatedPath;sha256=(Get-BytesSha256 $catalog.PatchedBytes)};config=[ordered]@{path=$configPath;backup_path=$configBackup;before_sha256=$configBeforeHash;existed=$plan.Analysis.Exists;had_bom=$plan.Analysis.Bom;newline=if($plan.Analysis.Newline-eq"`r`n"){'crlf'}else{'lf'};original_mode=$null;previous_model_catalog_json_present=($previousCatalog.Count-eq1);previous_model_catalog_json=if($previousCatalog.Count-eq1){$previousCatalog[0].Value}else{$null};previous_model_catalog_json_literal=if($previousCatalog.Count-eq1){$previousCatalog[0].Raw}else{$null};web_search_modified=$false;previous_web_search_present=$false;previous_web_search=$null;previous_web_search_literal=$null};cache=[ordered]@{original_path=$cachePath;backup_path=$cacheBackup;sha256=$cacheHash};other_lite_models=@($catalog.OtherLite);applied_at=[DateTimeOffset]::Now.ToString('o')}
             $stateText=($state|ConvertTo-Json -Depth 12)+"`n";$stateBytes=ConvertTo-Utf8Bytes $stateText $false
             $transaction=[ordered]@{schema_version=1;operation='apply';phase='prepared';nonce=$nonce;created_at=[DateTimeOffset]::Now.ToString('o');updated_at=$null;codex_version=$version;root=$CodexRoot;paths=[ordered]@{config=$configPath;config_backup=$configBackup;config_snapshot=$null;generated_catalog=$generatedPath;generated_catalog_pending=$null;cache_original=$cachePath;cache_backup=$cacheBackup;state=(Join-Path $CodexRoot 'provider-compat-state.json');state_archive=$null};hashes=[ordered]@{config_before=$configBeforeHash;config_after=(Get-BytesSha256 $plan.AfterBytes);generated_catalog=(Get-BytesSha256 $catalog.PatchedBytes);cache=$cacheHash;state=(Get-BytesSha256 $stateBytes)};flags=[ordered]@{config_existed=$plan.Analysis.Exists;config_should_delete=$false;generated_catalog_owned=$false;cache_should_restore=$false}}
             Write-Transaction $CodexRoot ([pscustomobject]$transaction);Invoke-TestFault 'apply-prepared'
@@ -1069,7 +1071,7 @@ function Invoke-Apply($Options,[string]$CodexRoot){
             if($cacheBackup){[IO.File]::Move($cachePath,$cacheBackup);if((Get-Sha256 $cacheBackup)-ne$cacheHash){throw 'cache backup verification failed'}};Set-TransactionPhase $CodexRoot $transaction 'cache-backed-up';Invoke-TestFault 'after-cache'
             if($env:CODEX_PROVIDER_COMPAT_TEST_MUTATE_CONFIG_BEFORE_WRITE){[IO.File]::AppendAllText($configPath,"# late-external-change`r`n",(New-Object Text.UTF8Encoding($false)))}
             $immediateConfigHash=Get-Sha256 $configPath;if(($plan.Analysis.Exists-and$immediateConfigHash-ne$plan.Analysis.Sha256)-or(-not$plan.Analysis.Exists-and$immediateConfigHash)){throw 'config.toml changed immediately before the atomic write'}
-            Invoke-TestFault 'config-write';Write-AtomicBytes $CodexRoot $configPath $plan.AfterBytes $nonce;if(-not$plan.Analysis.Exists){Set-PrivateFileAcl $configPath};if((Get-Sha256 $configPath)-ne(Get-BytesSha256 $plan.AfterBytes)){throw 'config hash verification failed'};if($plan.Analysis.Exists-and$plan.Analysis.Acl-and-not(Test-PathAclMatchesSddl $configPath $plan.Analysis.Acl)){throw 'config permissions changed unexpectedly'};$check=Get-ConfigAnalysis $configPath;Assert-NoDuplicateOwnedKeys $check;if($check.Keys.model_catalog_json.Count-ne1-or-not([string]$check.Keys.model_catalog_json[0].Value).Replace('\','/').Equals($generatedPath.Replace('\','/'),[StringComparison]::OrdinalIgnoreCase)){throw 'config verification failed'};if($Options.EnableWebSearch-and($check.Keys.web_search.Count-ne1-or$check.Keys.web_search[0].Value-ne'live')){throw 'web_search config verification failed'};Set-TransactionPhase $CodexRoot $transaction 'config-written';Invoke-TestFault 'after-config'
+            Invoke-TestFault 'config-write';Write-AtomicBytes $CodexRoot $configPath $plan.AfterBytes $nonce;if(-not$plan.Analysis.Exists){Set-PrivateFileAcl $configPath};if((Get-Sha256 $configPath)-ne(Get-BytesSha256 $plan.AfterBytes)){throw 'config hash verification failed'};if($plan.Analysis.Exists-and$plan.Analysis.Acl-and-not(Test-PathAclMatchesSddl $configPath $plan.Analysis.Acl)){throw 'config permissions changed unexpectedly'};$check=Get-ConfigAnalysis $configPath;Assert-NoDuplicateOwnedKeys $check;if($check.Keys.model_catalog_json.Count-ne1-or-not([string]$check.Keys.model_catalog_json[0].Value).Replace('\','/').Equals($generatedPath.Replace('\','/'),[StringComparison]::OrdinalIgnoreCase)){throw 'config verification failed'};Set-TransactionPhase $CodexRoot $transaction 'config-written';Invoke-TestFault 'after-config'
             Invoke-TestFault 'state-write';Write-AtomicBytes $CodexRoot $transaction.paths.state $stateBytes $nonce;Read-State $CodexRoot|Out-Null;Set-TransactionPhase $CodexRoot $transaction 'state-written';Invoke-TestFault 'after-state';Assert-OperationNotCancelled;$commitPointReached=$true;Invoke-TestFault 'apply-committed-before-cleanup'
             Remove-VerifiedOwnedFile $CodexRoot (Get-TransactionPath $CodexRoot) $null;Write-Info 'result=applied';Write-Info '完全退出并重新启动 Codex，然后新建任务/新 thread。';Write-Info '旧任务保留启动时的模型与工具快照，不会自动应用本次更改。';return $script:ExitSuccess
         }catch{
@@ -1106,7 +1108,7 @@ function Invoke-Rollback($Options,[string]$CodexRoot){
         try{
             $interruptScope=Enter-OperationInterruptScope
             $lock=Acquire-Lock $CodexRoot;Assert-OperationNotCancelled;if(Read-Transaction $CodexRoot){throw 'another transaction appeared while acquiring the lock'};$currentState=Read-State $CodexRoot;if(-not$currentState-or(Get-Sha256 $statePath)-ne$stateHash){throw 'state changed while waiting for the lock'};$current=Get-ConfigAnalysis $configPath
-            if($current.Sha256-ne$analysis.Sha256){if($attempt-eq0){Write-Warn 'config.toml changed after confirmation; rebuilding the rollback plan once';$analysis=$current;Assert-NoDuplicateOwnedKeys $analysis;if($analysis.Keys.model_catalog_json.Count-ne1-or-not([string]$analysis.Keys.model_catalog_json[0].Value).Replace('\','/').Equals($generated.Replace('\','/'),[StringComparison]::OrdinalIgnoreCase)){throw 'model_catalog_json drifted during confirmation'};$text=Get-RollbackText $state $analysis;$deleteConfig=(-not[bool]$state.config.existed)-and[string]::IsNullOrWhiteSpace($text);$afterBytes=if($deleteConfig){$null}else{ConvertTo-Utf8Bytes $text ([bool]$state.config.had_bom)};continue};throw 'config.toml changed repeatedly while rolling back'}
+            if($current.Sha256-ne$analysis.Sha256){if($attempt-eq0){Write-Warn 'config.toml changed after confirmation; rebuilding the rollback plan once';$analysis=$current;Assert-NoDuplicateOwnedKeys $analysis;if($analysis.Keys.model_catalog_json.Count-ne1-or-not([string]$analysis.Keys.model_catalog_json[0].Value).Replace('\','/').Equals($generated.Replace('\','/'),[StringComparison]::OrdinalIgnoreCase)){throw 'model_catalog_json drifted during confirmation'};if($state.config.web_search_modified-eq$true-and($analysis.Keys.web_search.Count-ne1-or$analysis.Keys.web_search[0].Value-ne'live')){throw 'web_search drifted during confirmation'};$text=Get-RollbackText $state $analysis;$deleteConfig=(-not[bool]$state.config.existed)-and[string]::IsNullOrWhiteSpace($text);$afterBytes=if($deleteConfig){$null}else{ConvertTo-Utf8Bytes $text ([bool]$state.config.had_bom)};continue};throw 'config.toml changed repeatedly while rolling back'}
             if((Get-Item -LiteralPath $configPath -Force).Attributes -band [IO.FileAttributes]::ReadOnly){throw 'config.toml is read-only'}
             $nonce=[string]$lock.Nonce;Assert-OperationNonce $nonce 'operation lock nonce';$snapshot=Join-Path $CodexRoot ".provider-compat-rollback-$nonce.config";$pending="$generated.rollback-pending-$nonce";$stamp=Get-Date -Format 'yyyyMMdd-HHmmss';$archive=Get-UniquePath(Join-Path $CodexRoot "provider-compat-state.json.rolled-back-$stamp");$cacheOriginal=$state.cache.original_path;$cacheBackup=$state.cache.backup_path;$catalogHash=if(Test-Path -LiteralPath $generated){Get-Sha256 $generated}else{$null};$catalogShouldMove=$false
             if($catalogHash-and$catalogHash-eq([string]$state.generated_catalog.sha256).ToUpperInvariant()){try{$ownershipCatalog=Read-CatalogFile $generated;$catalogShouldMove=[bool]$ownershipCatalog.AllTargetsAlreadyFalse}catch{$catalogShouldMove=$false}}
@@ -1146,6 +1148,12 @@ function Invoke-Rollback($Options,[string]$CodexRoot){
 }
 
 function Invoke-Main([string[]]$InputArgs) {
+    foreach($argument in @($InputArgs)){
+        if([string]::Equals([string]$argument,'--enable-web-search',[StringComparison]::OrdinalIgnoreCase)){
+            Write-Warn '--enable-web-search was removed; this tool no longer manages Web Search'
+            return $script:ExitError
+        }
+    }
     try { Assert-InternalTestAuthorization }
     catch { Write-Warn $_.Exception.Message; return $script:ExitUnsafe }
     try { $options = Parse-Arguments $InputArgs }

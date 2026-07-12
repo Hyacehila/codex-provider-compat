@@ -374,7 +374,16 @@ $sourcePowerShell = Join-Path $repoRoot 'codex-provider-compat.ps1'
 $sourceShell = Join-Path $repoRoot 'codex-provider-compat.sh'
 $sourceLicense = Join-Path $repoRoot 'LICENSE'
 $sourceNotices = Join-Path $repoRoot 'THIRD_PARTY_NOTICES.md'
-$requiredSources = @($sourcePowerShell, $sourceShell, $sourceLicense, $sourceNotices)
+$sourceApacheLicense = Join-Path $repoRoot 'LICENSES/Apache-2.0.txt'
+$sourceCodexNotice = Join-Path $repoRoot 'LICENSES/OpenAI-Codex-NOTICE.txt'
+$requiredSources = @(
+    $sourcePowerShell,
+    $sourceShell,
+    $sourceLicense,
+    $sourceNotices,
+    $sourceApacheLicense,
+    $sourceCodexNotice
+)
 foreach ($path in $requiredSources) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "required release source is missing: $path"
@@ -382,11 +391,24 @@ foreach ($path in $requiredSources) {
 }
 
 $source = Assert-SourceEncoding -PowerShellPath $sourcePowerShell -ShellPath $sourceShell -LfPaths @(
-    $sourceLicense, $sourceNotices
+    $sourceLicense, $sourceNotices, $sourceApacheLicense, $sourceCodexNotice
 )
 if ($source.PowerShellText -notmatch '(?m)^# SPDX-License-Identifier: MIT\r?$' -or
     $source.ShellText -notmatch '(?m)^# SPDX-License-Identifier: MIT$') {
     throw 'both standalone scripts must contain an SPDX MIT license header'
+}
+
+$apacheLicenseText = Get-StrictUtf8Text -Bytes ([IO.File]::ReadAllBytes($sourceApacheLicense)) -Label 'Apache-2.0.txt'
+foreach ($requiredText in @('Apache License', 'Version 2.0, January 2004', 'TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION')) {
+    if ($apacheLicenseText.IndexOf($requiredText, [StringComparison]::Ordinal) -lt 0) {
+        throw "Apache-2.0.txt is missing required license text: $requiredText"
+    }
+}
+$codexNoticeText = Get-StrictUtf8Text -Bytes ([IO.File]::ReadAllBytes($sourceCodexNotice)) -Label 'OpenAI-Codex-NOTICE.txt'
+foreach ($requiredText in @('OpenAI Codex', 'Copyright', 'Ratatui')) {
+    if ($codexNoticeText.IndexOf($requiredText, [StringComparison]::Ordinal) -lt 0) {
+        throw "OpenAI-Codex-NOTICE.txt is missing required attribution text: $requiredText"
+    }
 }
 
 $psVersionMatch = [regex]::Match($source.PowerShellText, '(?m)^\$script:ToolVersion\s*=\s*''([^'']+)''\s*$')
@@ -413,9 +435,9 @@ $standaloneShellPath = Join-Path $outputRoot $standaloneShellName
 $windowsReadmeTemplate = @'
 # Codex Provider Compatibility — Windows quick start / Windows 快速开始
 
-This package helps when `gpt-5.6-sol`, `gpt-5.6-terra`, or `gpt-5.6-luna` works for chat through a custom provider but Codex tools such as shell/exec, functions, MCP, collaboration, or Web Search are missing. Its persistent Codex changes stay inside your user Codex home and can be rolled back.
+This package helps when `gpt-5.6-sol`, `gpt-5.6-terra`, or `gpt-5.6-luna` works for chat through a custom provider but Codex tools such as shell/exec, functions, MCP, code mode, collaboration, or extensions are missing. Its persistent Codex changes stay inside your user Codex home and can be rolled back.
 
-本工具适用于以下情况：通过自定义 provider 使用 `gpt-5.6-sol`、`gpt-5.6-terra` 或 `gpt-5.6-luna` 时，普通对话正常，但 shell/exec、函数、MCP、协作或 Web Search 等 Codex 工具消失。它对 Codex 的持久修改只发生在用户 Codex home 内，并且可以回滚。
+本工具适用于以下情况：通过自定义 provider 使用 `gpt-5.6-sol`、`gpt-5.6-terra` 或 `gpt-5.6-luna` 时，普通对话正常，但 shell/exec、函数、MCP、code mode、协作或扩展工具消失。它对 Codex 的持久修改只发生在用户 Codex home 内，并且可以回滚。
 
 ## 1. Verify the download / 校验下载文件
 
@@ -461,17 +483,11 @@ After `rollback`, completely restart Codex and create a new task/thread again. R
 
 执行 `rollback` 后也需要完全重启 Codex 并再次新建任务/thread。回滚只恢复本工具拥有的改动，并保留之后产生的无关配置修改。
 
-## Optional Web Search setting / 可选 Web Search 设置
-
-The base patch does not enable Web Search. If your provider supports the standard Responses `web_search` tool and you want live hosted search, use `apply --enable-web-search` instead of plain `apply` on the first installation. If the base patch is already applied, run `rollback` first, restart Codex, and then apply again with this flag. Search may incur provider charges. This option does not make an unsupported provider support search.
-
-基础补丁不会启用 Web Search。如果 provider 支持标准 Responses `web_search` 工具，而且你需要实时 hosted search，请在首次安装时用 `apply --enable-web-search` 替代普通 `apply`。如果基础补丁已经安装，先运行 `rollback`，重启 Codex，再带此参数重新应用。搜索可能产生 provider 费用；此选项不会让原本不支持搜索的 provider 获得该能力。
-
 ## Safety and updates / 安全与更新
 
-This is an unofficial community tool. It does not read credentials or contact your provider. Restoring standard tool definitions cannot make a provider implement shell, MCP, search, or any other capability it does not support.
+This is an unofficial community tool. It does not read credentials or contact your provider. It changes only the model catalog override and does not enable, disable, or manage individual tools. Restoring standard tool definitions cannot make a provider implement a capability it does not support.
 
-这是一个非官方社区工具。它不会读取凭据，也不会访问你的 provider。恢复标准工具定义并不能让 provider 获得它原本没有实现的 shell、MCP、搜索或其他能力。
+这是一个非官方社区工具。它不会读取凭据，也不会访问你的 provider；只修改模型目录覆盖，不会开启、关闭或管理任何单项工具。恢复标准工具定义并不能让 provider 获得它原本没有实现的能力。
 
 If `doctor` or `status` reports `recovery-required`, do not delete lock, transaction, or pending files; run the intended `apply` or `rollback` again. A healthy `status` can still be superseded by a selected profile, project configuration, or CLI override, so run `doctor` the same way you launch Codex. After every Codex update, run `status` and `doctor` again rather than keeping an old catalog across versions.
 
@@ -486,9 +502,9 @@ $windowsReadmeBytes = ConvertTo-PackageReadmeBytes ($windowsReadmeTemplate.Repla
 $macosReadmeTemplate = @'
 # Codex Provider Compatibility — macOS quick start / macOS 快速开始
 
-This package helps when `gpt-5.6-sol`, `gpt-5.6-terra`, or `gpt-5.6-luna` works for chat through a custom provider but Codex tools such as shell/exec, functions, MCP, collaboration, or Web Search are missing. Its persistent Codex changes stay inside your user Codex home and can be rolled back.
+This package helps when `gpt-5.6-sol`, `gpt-5.6-terra`, or `gpt-5.6-luna` works for chat through a custom provider but Codex tools such as shell/exec, functions, MCP, code mode, collaboration, or extensions are missing. Its persistent Codex changes stay inside your user Codex home and can be rolled back.
 
-本工具适用于以下情况：通过自定义 provider 使用 `gpt-5.6-sol`、`gpt-5.6-terra` 或 `gpt-5.6-luna` 时，普通对话正常，但 shell/exec、函数、MCP、协作或 Web Search 等 Codex 工具消失。它对 Codex 的持久修改只发生在用户 Codex home 内，并且可以回滚。
+本工具适用于以下情况：通过自定义 provider 使用 `gpt-5.6-sol`、`gpt-5.6-terra` 或 `gpt-5.6-luna` 时，普通对话正常，但 shell/exec、函数、MCP、code mode、协作或扩展工具消失。它对 Codex 的持久修改只发生在用户 Codex home 内，并且可以回滚。
 
 ## 1. Verify the download / 校验下载文件
 
@@ -535,17 +551,11 @@ After `rollback`, completely restart Codex and create a new task/thread again. R
 
 执行 `rollback` 后也需要完全重启 Codex 并再次新建任务/thread。回滚只恢复本工具拥有的改动，并保留之后产生的无关配置修改。
 
-## Optional Web Search setting / 可选 Web Search 设置
-
-The base patch does not enable Web Search. If your provider supports the standard Responses `web_search` tool and you want live hosted search, use `apply --enable-web-search` instead of plain `apply` on the first installation. If the base patch is already applied, run `rollback` first, restart Codex, and then apply again with this flag. Search may incur provider charges. This option does not make an unsupported provider support search.
-
-基础补丁不会启用 Web Search。如果 provider 支持标准 Responses `web_search` 工具，而且你需要实时 hosted search，请在首次安装时用 `apply --enable-web-search` 替代普通 `apply`。如果基础补丁已经安装，先运行 `rollback`，重启 Codex，再带此参数重新应用。搜索可能产生 provider 费用；此选项不会让原本不支持搜索的 provider 获得该能力。
-
 ## Safety and updates / 安全与更新
 
-This is an unofficial community tool. It does not read credentials or contact your provider. Restoring standard tool definitions cannot make a provider implement shell, MCP, search, or any other capability it does not support.
+This is an unofficial community tool. It does not read credentials or contact your provider. It changes only the model catalog override and does not enable, disable, or manage individual tools. Restoring standard tool definitions cannot make a provider implement a capability it does not support.
 
-这是一个非官方社区工具。它不会读取凭据，也不会访问你的 provider。恢复标准工具定义并不能让 provider 获得它原本没有实现的 shell、MCP、搜索或其他能力。
+这是一个非官方社区工具。它不会读取凭据，也不会访问你的 provider；只修改模型目录覆盖，不会开启、关闭或管理任何单项工具。恢复标准工具定义并不能让 provider 获得它原本没有实现的能力。
 
 If `doctor` or `status` reports `recovery-required`, do not delete lock, transaction, or pending files; run the intended `apply` or `rollback` again. A healthy `status` can still be superseded by a selected profile, project configuration, or CLI override, so run `doctor` the same way you launch Codex. After every Codex update, run `status` and `doctor` again rather than keeping an old catalog across versions.
 
@@ -559,7 +569,9 @@ $macosReadmeBytes = ConvertTo-PackageReadmeBytes ($macosReadmeTemplate.Replace('
 
 $commonFiles = @(
     [pscustomobject]@{ RelativeName = 'LICENSE'; Bytes = [IO.File]::ReadAllBytes($sourceLicense); Mode = 33188 },
-    [pscustomobject]@{ RelativeName = 'THIRD_PARTY_NOTICES.md'; Bytes = [IO.File]::ReadAllBytes($sourceNotices); Mode = 33188 }
+    [pscustomobject]@{ RelativeName = 'THIRD_PARTY_NOTICES.md'; Bytes = [IO.File]::ReadAllBytes($sourceNotices); Mode = 33188 },
+    [pscustomobject]@{ RelativeName = 'LICENSES/Apache-2.0.txt'; Bytes = [IO.File]::ReadAllBytes($sourceApacheLicense); Mode = 33188 },
+    [pscustomobject]@{ RelativeName = 'LICENSES/OpenAI-Codex-NOTICE.txt'; Bytes = [IO.File]::ReadAllBytes($sourceCodexNotice); Mode = 33188 }
 )
 
 $windowsRoot = "$prefix-windows"

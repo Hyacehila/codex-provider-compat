@@ -35,6 +35,16 @@ run_tool_env() {
   RUN_CODE=$?
 }
 
+run_tool_env2() {
+  env_name1=$1
+  env_value1=$2
+  env_name2=$3
+  env_value2=$4
+  shift 4
+  /usr/bin/env "$env_name1=$env_value1" "$env_name2=$env_value2" /bin/sh "$TOOL" "$@" > "$RUN_OUT" 2>&1
+  RUN_CODE=$?
+}
+
 assert_eq() {
   expected=$1
   actual=$2
@@ -243,6 +253,10 @@ t_cycle() {
   [ "$(first_three_hex "$h/config.toml")" != efbbbf ] || return 1
   assert_file "$h/provider-compat-state.json" || return 1
   [ "$(json_get_value "$h/provider-compat-state.json" config.had_bom)" = false ] || return 1
+  [ "$(json_get_value "$h/provider-compat-state.json" config.web_search_modified)" = false ] || return 1
+  [ "$(json_get_value "$h/provider-compat-state.json" config.previous_web_search_present)" = false ] || return 1
+  [ -z "$(json_get_value "$h/provider-compat-state.json" config.previous_web_search)" ] || return 1
+  [ -z "$(json_get_value "$h/provider-compat-state.json" config.previous_web_search_literal)" ] || return 1
   assert_no_path "$h/provider-compat-transaction.json" || return 1
   assert_not_contains "$h/provider-compat-state.json" 'provider.example.invalid' || return 1
   assert_not_contains "$h/provider-compat-state.json" 'keep this comment' || return 1
@@ -268,35 +282,89 @@ t_cycle() {
   [ "$(first_three_hex "$h/config.toml")" != efbbbf ] || return 1
 }
 
-t_web_search() {
-  new_home web
-  h=$NEW_HOME
-  /bin/cp "$FIXTURES/config-complex.toml" "$h/config.toml"
-  apply_default "$h" --enable-web-search
-  assert_eq 0 "$RUN_CODE" apply || return 1
-  assert_contains "$RUN_OUT" 'plan: set web_search = "live"' || return 1
-  assert_contains "$h/config.toml" 'web_search = "live" # user choice' || return 1
-  rollback_default "$h"
-  assert_eq 0 "$RUN_CODE" rollback || return 1
-  assert_contains "$h/config.toml" 'web_search = "disabled" # user choice' || return 1
-  for mode in cached indexed live; do
+t_web_search_compat() {
+  for mode in disabled cached indexed live; do
     new_home "web-$mode"
     h=$NEW_HOME
     printf 'model = "gpt-5.6-sol"\nmodel_provider = "custom"\nweb_search = "%s" # preserve-%s\n\n[model_providers.custom]\nwire_api = "responses"\n' "$mode" "$mode" > "$h/config.toml" || return 1
     apply_default "$h"
-    assert_eq 0 "$RUN_CODE" "$mode-base-apply" || return 1
+    assert_eq 0 "$RUN_CODE" "$mode-apply" || return 1
     assert_not_contains "$RUN_OUT" 'plan: set web_search = "live"' || return 1
     assert_contains "$h/config.toml" "web_search = \"$mode\" # preserve-$mode" || return 1
+    [ "$(json_get_value "$h/provider-compat-state.json" config.web_search_modified)" = false ] || return 1
     rollback_default "$h"
-    assert_eq 0 "$RUN_CODE" "$mode-base-rollback" || return 1
-    apply_default "$h" --enable-web-search
-    assert_eq 0 "$RUN_CODE" "$mode-enabled-apply" || return 1
-    assert_contains "$RUN_OUT" 'plan: set web_search = "live"' || return 1
-    assert_contains "$h/config.toml" 'web_search = "live"' || return 1
-    rollback_default "$h"
-    assert_eq 0 "$RUN_CODE" "$mode-enabled-rollback" || return 1
+    assert_eq 0 "$RUN_CODE" "$mode-rollback" || return 1
     assert_contains "$h/config.toml" "web_search = \"$mode\" # preserve-$mode" || return 1
   done
+
+  new_home removed-web-search-flag
+  h=$NEW_HOME
+  /bin/cp "$FIXTURES/config-basic.toml" "$h/config.toml"
+  printf cache > "$h/models_cache.json"
+  config_before=$(hash_file "$h/config.toml")
+  cache_before=$(hash_file "$h/models_cache.json")
+  paths_before=$(/usr/bin/find "$h" -mindepth 1 -print | /usr/bin/sort)
+  run_tool apply --yes --enable-web-search --codex-home "$h" --codex-version 0.144.1 --catalog-file "$FIXTURES/models-valid.json"
+  assert_eq 1 "$RUN_CODE" removed-flag || return 1
+  assert_contains "$RUN_OUT" '--enable-web-search was removed; this tool no longer manages Web Search' || return 1
+  [ "$(hash_file "$h/config.toml")" = "$config_before" ] || return 1
+  [ "$(hash_file "$h/models_cache.json")" = "$cache_before" ] || return 1
+  [ "$(/usr/bin/find "$h" -mindepth 1 -print | /usr/bin/sort)" = "$paths_before" ] || return 1
+
+  new_home legacy-web-search-rollback
+  h=$NEW_HOME
+  /bin/cp "$FIXTURES/config-basic.toml" "$h/config.toml"
+  apply_default "$h"
+  assert_eq 0 "$RUN_CODE" legacy-setup || return 1
+  /usr/bin/awk '{if ($0 ~ /^web_search[ \t]*=/) print "web_search = \"live\""; else print $0}' "$h/config.toml" > "$h/config.toml.legacy"
+  /bin/mv "$h/config.toml.legacy" "$h/config.toml"
+  json_set_string "$h/provider-compat-state.json" patch_version 0.1.1 || return 1
+  json_set_boolean "$h/provider-compat-state.json" config.web_search_modified true || return 1
+  json_set_boolean "$h/provider-compat-state.json" config.previous_web_search_present true || return 1
+  json_set_string "$h/provider-compat-state.json" config.previous_web_search cached || return 1
+  json_set_string "$h/provider-compat-state.json" config.previous_web_search_literal '"cached"' || return 1
+  run_tool status --codex-home "$h" --codex-version 0.144.1
+  assert_eq 0 "$RUN_CODE" legacy-status || return 1
+  rollback_default "$h"
+  assert_eq 0 "$RUN_CODE" legacy-rollback || return 1
+  assert_contains "$h/config.toml" 'web_search = "cached"' || return 1
+
+  new_home legacy-web-search-drift
+  h=$NEW_HOME
+  /bin/cp "$FIXTURES/config-basic.toml" "$h/config.toml"
+  apply_default "$h"
+  assert_eq 0 "$RUN_CODE" legacy-drift-setup || return 1
+  json_set_string "$h/provider-compat-state.json" patch_version 0.1.1 || return 1
+  json_set_boolean "$h/provider-compat-state.json" config.web_search_modified true || return 1
+  json_set_boolean "$h/provider-compat-state.json" config.previous_web_search_present true || return 1
+  json_set_string "$h/provider-compat-state.json" config.previous_web_search cached || return 1
+  json_set_string "$h/provider-compat-state.json" config.previous_web_search_literal '"cached"' || return 1
+  run_tool status --codex-home "$h" --codex-version 0.144.1
+  assert_eq 3 "$RUN_CODE" legacy-drift-status || return 1
+  rollback_default "$h"
+  assert_eq 3 "$RUN_CODE" legacy-drift-rollback || return 1
+  assert_file "$h/provider-compat-state.json" || return 1
+  assert_contains "$h/config.toml" 'web_search = "cached"' || return 1
+
+  new_home legacy-web-search-duplicate
+  h=$NEW_HOME
+  /bin/cp "$FIXTURES/config-basic.toml" "$h/config.toml"
+  apply_default "$h"
+  assert_eq 0 "$RUN_CODE" legacy-duplicate-setup || return 1
+  /usr/bin/awk '{if ($0 ~ /^web_search[ \t]*=/) print "web_search = \"live\"\n\"web_search\" = \"live\""; else print $0}' "$h/config.toml" > "$h/config.toml.legacy"
+  /bin/mv "$h/config.toml.legacy" "$h/config.toml"
+  json_set_string "$h/provider-compat-state.json" patch_version 0.1.1 || return 1
+  json_set_boolean "$h/provider-compat-state.json" config.web_search_modified true || return 1
+  json_set_boolean "$h/provider-compat-state.json" config.previous_web_search_present true || return 1
+  json_set_string "$h/provider-compat-state.json" config.previous_web_search cached || return 1
+  json_set_string "$h/provider-compat-state.json" config.previous_web_search_literal '"cached"' || return 1
+  duplicate_before=$(hash_file "$h/config.toml")
+  run_tool status --codex-home "$h" --codex-version 0.144.1
+  assert_eq 3 "$RUN_CODE" legacy-duplicate-status || return 1
+  rollback_default "$h"
+  assert_eq 3 "$RUN_CODE" legacy-duplicate-rollback || return 1
+  [ "$(hash_file "$h/config.toml")" = "$duplicate_before" ] || return 1
+  assert_file "$h/provider-compat-state.json" || return 1
 }
 
 t_dry_run_and_doctor() {
@@ -435,17 +503,34 @@ web_search = "inside-section"
 TOML
   original="$h/original.toml"
   /bin/cp "$h/config.toml" "$original"
-  apply_default "$h" --enable-web-search
+  apply_default "$h"
   assert_eq 0 "$RUN_CODE" lexer-apply || return 1
   assert_contains "$h/config.toml" 'model_catalog_json = "inside-multiline"' || return 1
   assert_contains "$h/config.toml" 'model_catalog_json = "inside-four-quote-multiline"' || return 1
   assert_contains "$h/config.toml" 'web_search = "inside-five-quote-multiline"' || return 1
   assert_contains "$h/config.toml" '"model_catalog_json" = "' || return 1
   assert_contains "$h/config.toml" '# keep catalog comment' || return 1
-  assert_contains "$h/config.toml" "'web_search' = \"live\" # keep web comment" || return 1
+  assert_contains "$h/config.toml" "'web_search' = \"disabled\" # keep web comment" || return 1
   rollback_default "$h"
   assert_eq 0 "$RUN_CODE" lexer-rollback || return 1
   [ "$(hash_file "$h/config.toml")" = "$(hash_file "$original")" ] || return 1
+  for web_form in dotted duplicate multiline complex; do
+    new_home "web-lexer-$web_form"
+    b=$NEW_HOME
+    case "$web_form" in
+      dotted) printf 'web_search.mode = "live"\nmodel = "gpt-5.6-sol"\nmodel_provider = "custom"\n' > "$b/config.toml" ;;
+      duplicate) printf 'web_search = "cached"\n"web_search" = "disabled"\nmodel = "gpt-5.6-sol"\nmodel_provider = "custom"\n' > "$b/config.toml" ;;
+      multiline) printf 'web_search = """\nlive-like text\n"""\nmodel = "gpt-5.6-sol"\nmodel_provider = "custom"\n' > "$b/config.toml" ;;
+      complex) printf 'web_search = { mode = "live", nested = ["keep"] }\nmodel = "gpt-5.6-sol"\nmodel_provider = "custom"\n' > "$b/config.toml" ;;
+    esac
+    before=$(hash_file "$b/config.toml")
+    apply_default "$b"
+    assert_eq 0 "$RUN_CODE" "web-$web_form-apply" || return 1
+    [ "$(json_get_value "$b/provider-compat-state.json" config.web_search_modified)" = false ] || return 1
+    rollback_default "$b"
+    assert_eq 0 "$RUN_CODE" "web-$web_form-rollback" || return 1
+    [ "$(hash_file "$b/config.toml")" = "$before" ] || return 1
+  done
   for bad in dotted duplicate unterminated mixed-newline; do
     new_home "lexer-$bad"
     b=$NEW_HOME
@@ -638,7 +723,7 @@ t_state_and_transaction_tamper() {
   printf cache > "$h/models_cache.json"
   apply_default "$h"
   assert_eq 0 "$RUN_CODE" empty-state-fields-setup || return 1
-  for field in config.backup_path config.before_sha256 config.previous_web_search_literal cache.backup_path cache.sha256 other_lite_models.0; do
+  for field in config.backup_path config.before_sha256 cache.backup_path cache.sha256 other_lite_models.0; do
     original_value=$(json_get_value "$h/provider-compat-state.json" "$field") || return 1
     [ -n "$original_value" ] || return 1
     json_set_string "$h/provider-compat-state.json" "$field" '' || return 1
@@ -815,6 +900,18 @@ t_signal_and_crash_recovery() {
   [ "$(hash_file "$h/config.toml")" = "$original" ] || return 1
   assert_file "$h/models_cache.json" || return 1
   assert_no_path "$h/provider-compat-transaction.json" || return 1
+  new_home signal-int
+  h=$NEW_HOME
+  /bin/cp "$FIXTURES/config-basic.toml" "$h/config.toml"
+  printf cache > "$h/models_cache.json"
+  original=$(hash_file "$h/config.toml")
+  run_tool_env2 CODEX_PROVIDER_COMPAT_TEST_SIGNAL_STAGE after-catalog CODEX_PROVIDER_COMPAT_TEST_SIGNAL_KIND INT apply --yes --codex-home "$h" --codex-version 0.144.1 --catalog-file "$FIXTURES/models-valid.json"
+  assert_eq 130 "$RUN_CODE" signal-int || return 1
+  [ "$(hash_file "$h/config.toml")" = "$original" ] || return 1
+  assert_file "$h/models_cache.json" || return 1
+  assert_no_path "$h/provider-compat-transaction.json" || return 1
+  assert_no_path "$h/provider-compat.lock.d" || return 1
+  assert_no_path "$h/model-catalogs/models-0.144.1.standard-responses-compat.json" || return 1
   new_home crash
   h=$NEW_HOME
   /bin/cp "$FIXTURES/config-basic.toml" "$h/config.toml"
@@ -1269,7 +1366,7 @@ t_curl_capability() {
 }
 
 case_run lifecycle t_cycle
-case_run web-search t_web_search
+case_run web-search-compat t_web_search_compat
 case_run dry-run-doctor t_dry_run_and_doctor
 case_run unauthorized-test-hook t_unauthorized_test_hook
 case_run doctor-conclusions t_doctor_conclusions

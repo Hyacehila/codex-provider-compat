@@ -6,7 +6,7 @@ on:
       version:
         description: Stable version to package, without the v prefix
         required: true
-        default: 0.1.1
+        default: 0.2.0
         type: string
   push:
     tags:
@@ -119,11 +119,13 @@ jobs:
             $packageRoot = Join-Path $extract "codex-provider-compat-v$env:RELEASE_VERSION-windows"
             $scriptPath = Join-Path $packageRoot 'codex-provider-compat.ps1'
             $readmePath = Join-Path $packageRoot 'README.md'
-            $packageNames = @(Get-ChildItem -LiteralPath $packageRoot -File | Select-Object -ExpandProperty Name | Sort-Object)
-            $expectedNames = @('LICENSE', 'README.md', 'THIRD_PARTY_NOTICES.md', 'codex-provider-compat.ps1') | Sort-Object
+            $packageNames = @(Get-ChildItem -LiteralPath $packageRoot -File -Recurse | ForEach-Object {
+              $_.FullName.Substring($packageRoot.Length + 1).Replace('\', '/')
+            } | Sort-Object)
+            $expectedNames = @('LICENSE', 'LICENSES/Apache-2.0.txt', 'LICENSES/OpenAI-Codex-NOTICE.txt', 'README.md', 'THIRD_PARTY_NOTICES.md', 'codex-provider-compat.ps1') | Sort-Object
             if (($packageNames -join "`n") -ne ($expectedNames -join "`n")) { throw "unexpected Windows package contents: $($packageNames -join ', ')" }
             $readme = Get-Content -LiteralPath $readmePath -Raw
-            foreach ($required in @('Get-FileHash', 'SHA256SUMS.txt', 'doctor', 'apply', 'status', 'rollback', '--enable-web-search', 'restart Codex', 'new task/thread')) {
+            foreach ($required in @('Get-FileHash', 'SHA256SUMS.txt', 'doctor', 'apply', 'status', 'rollback', 'restart Codex', 'new task/thread')) {
               if (-not $readme.Contains($required)) { throw "Windows package README is missing: $required" }
             }
             $standaloneHash = (Get-FileHash -LiteralPath ./dist/codex-provider-compat.ps1 -Algorithm SHA256).Hash
@@ -176,17 +178,29 @@ jobs:
             esac
           }
           trap cleanup 0 1 2 15
-          /usr/bin/unzip -q "dist/codex-provider-compat-v${RELEASE_VERSION}-macos.zip" -d "$tmp/extract"
-          package="$tmp/extract/codex-provider-compat-v${RELEASE_VERSION}-macos"
+          archive="dist/codex-provider-compat-v${RELEASE_VERSION}-macos.zip"
+          /bin/mkdir "$tmp/unzip" "$tmp/ditto"
+          /usr/bin/unzip -q "$archive" -d "$tmp/unzip"
+          /usr/bin/ditto -x -k "$archive" "$tmp/ditto"
+          unzip_package="$tmp/unzip/codex-provider-compat-v${RELEASE_VERSION}-macos"
+          package="$tmp/ditto/codex-provider-compat-v${RELEASE_VERSION}-macos"
           script="$package/codex-provider-compat.sh"
           readme="$package/README.md"
-          test "$(/usr/bin/find "$package" -type f | /usr/bin/wc -l | /usr/bin/tr -d ' ')" = 4
-          test -f "$package/LICENSE"
-          test -f "$package/THIRD_PARTY_NOTICES.md"
-          for required in 'shasum -a 256' SHA256SUMS.txt doctor apply status rollback --enable-web-search 'restart Codex' 'new task/thread'; do
+          test "$(/usr/bin/find "$unzip_package" -type f | /usr/bin/wc -l | /usr/bin/tr -d ' ')" = 6
+          test "$(/usr/bin/find "$package" -type f | /usr/bin/wc -l | /usr/bin/tr -d ' ')" = 6
+          for package_root in "$unzip_package" "$package"; do
+            test -f "$package_root/LICENSE"
+            test -f "$package_root/LICENSES/Apache-2.0.txt"
+            test -f "$package_root/LICENSES/OpenAI-Codex-NOTICE.txt"
+            test -f "$package_root/README.md"
+            test -f "$package_root/THIRD_PARTY_NOTICES.md"
+          done
+          for required in 'shasum -a 256' SHA256SUMS.txt doctor apply status rollback 'restart Codex' 'new task/thread'; do
             /usr/bin/grep -F -- "$required" "$readme" >/dev/null
           done
+          test -x "$unzip_package/codex-provider-compat.sh"
           test -x "$script"
+          /usr/bin/cmp "$unzip_package/codex-provider-compat.sh" "$script"
           /usr/bin/cmp dist/codex-provider-compat.sh "$script"
           /bin/sh -n dist/codex-provider-compat.sh
           /bin/sh -n "$script"
