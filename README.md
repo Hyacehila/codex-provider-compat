@@ -22,13 +22,38 @@ download and verify -> doctor -> apply -> fully restart Codex -> create a new ta
 
 ## How to use
 
-### Check whether it applies
+### Let your AI handle it
+
+If your local AI assistant can use a terminal, access local files, and download files, you can give it the prompt below. It will inspect and run the tool for you. You only need to approve once before it applies the patch.
+
+```text
+Help me safely check and, if applicable, install Codex Provider Compatibility on this computer.
+
+Follow these rules:
+1. Use only the official GitHub repository https://github.com/Hyacehila/codex-provider-compat and its latest stable, non-prerelease Release. Do not prefer cloning the source repository, and do not use opaque commands such as curl | sh or irm | iex.
+2. Detect whether this computer is running Windows or macOS. Download the matching Release ZIP and SHA256SUMS.txt, verify the ZIP's SHA-256 against the published entry, extract it to a temporary directory, and inspect the included README and script before running anything.
+3. Run doctor first. It must be read-only. If the checksum fails, the Release is unsuitable, doctor says the patch is not applicable, versions conflict, recovery is required, or any state is unsafe or ambiguous, stop without applying changes and explain the result simply.
+4. If doctor confirms that apply is appropriate, tell me exactly what the script will change and back up, then ask me for one explicit confirmation. Do not apply before I confirm. After confirmation, run apply with --yes so no second confirmation is needed.
+5. After apply succeeds, run status and report whether the patch is healthy, together with the generated catalog, configuration backup, cache backup, and state-file locations reported by the script.
+6. Do not read auth.json, API keys, tokens, or provider credentials. Do not call a real provider or perform billable model or search requests. Do not print or upload private configuration or diagnostics.
+7. Do not modify Codex binaries, application packages, source code, servers, or provider configuration. Do not manually edit JSON or TOML, bypass the script's safety checks, or use the removed --enable-web-search option.
+8. If you do not have terminal, local-file, or download access, stop and tell me to follow the manual instructions in the repository README instead. Never claim success without completing the checks.
+9. When finished, remind me to fully quit and restart Codex, then create a new task. Reopening an old task is not enough.
+```
+
+The AI must have access to the computer where Codex is installed. A chat-only assistant cannot perform these steps; use the manual method below instead.
+
+### Prefer to do it manually?
+
+The complete manual procedure remains available below.
+
+#### Check whether it applies
 
 The patch targets only GPT-5.6 Sol (`gpt-5.6-sol`), Terra (`gpt-5.6-terra`), and Luna (`gpt-5.6-luna`) when used with a custom provider. It is not intended for other models or Codex's built-in OpenAI connection.
 
 Always run `doctor` first. It checks local versions, configuration, and safety without writing files. If the script cannot prove that a change is safe, it stops and leaves the active configuration alone.
 
-### Download and verify v0.2.0
+#### Download and verify v0.2.0
 
 Open the [v0.2.0 Release page](https://github.com/Hyacehila/codex-provider-compat/releases/tag/v0.2.0), then download `SHA256SUMS.txt` and the ZIP for your platform:
 
@@ -53,7 +78,7 @@ cat ./SHA256SUMS.txt
 
 The computed value must match the ZIP's entry in `SHA256SUMS.txt`. Extract the package and inspect its README and script before running it. Standalone `.ps1` and `.sh` assets are also provided. This project does not recommend opaque `curl | sh` or `irm | iex` commands.
 
-### Windows
+#### Windows
 
 Windows PowerShell 5.1 and PowerShell 7.5 or later are supported. No extra runtime is required.
 
@@ -70,7 +95,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\codex-provider-compat.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\codex-provider-compat.ps1 apply
 ```
 
-### macOS
+#### macOS
 
 The script uses only tools included with macOS; Homebrew, Python, Node, and `jq` are not required.
 
@@ -81,13 +106,13 @@ chmod +x ./codex-provider-compat.sh
 ./codex-provider-compat.sh apply
 ```
 
-### Restart and create a new task
+#### Restart and create a new task
 
 After `apply` succeeds, fully quit and restart Codex, then create a new task. Old tasks keep the model and tool snapshot captured when they started, so reopening one is not enough.
 
 This tool does not enable, disable, or otherwise manage individual tools.
 
-### Check or undo the patch
+#### Check or undo the patch
 
 ```powershell
 .\codex-provider-compat.ps1 status
@@ -107,7 +132,7 @@ After a Codex update, run `status` and `doctor` again. Do not keep an old catalo
 
 If you used the removed v0.1.1 `--enable-web-search` option and want the tool to stop owning that legacy change, use v0.2.0 to run `rollback`, restart Codex, then run a normal `apply` and restart into a new task. The new version does not alter your search setting.
 
-### Commands and automation
+#### Commands and automation
 
 | Command | Purpose |
 |---|---|
