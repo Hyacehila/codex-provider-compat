@@ -186,8 +186,6 @@ The production tool does not read `auth.json` or API keys, call provider APIs, u
 
 The patch restores standard tool definitions; it cannot make a provider implement a tool it does not support. Automated tests cover Windows PowerShell 5.1/7, macOS shell/JXA behavior, catalog and TOML integrity, path safety, failure recovery, release packages, and Lite-versus-standard request shapes against localhost.
 
-A maintainer test on one anonymous real Responses provider used only a temporary Windows Codex home. In the recorded acceptance runs, standard mode completed text and multi-turn checks on all three models, shell/exec on Sol and Terra, collaboration on all three, and a local MCP round trip on Sol. Image input failed on that provider. Code-mode proof, app-server dynamic functions, explicit original image detail, and image generation remain `not-run` because the available client path could not isolate credentials or provide deterministic evidence. Credentials, endpoint details, raw requests, and raw responses were not published, and the real Codex home remained unchanged.
-
 Real macOS Codex Desktop behavior also remains `not-run` because this project does not currently have a Mac Desktop test environment. Results from one provider must not be generalized to every OpenAI-compatible service.
 
 The project uses the [MIT License](LICENSE). The catalog downloaded at runtime comes from the Apache-2.0 [`openai/codex`](https://github.com/openai/codex) repository; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

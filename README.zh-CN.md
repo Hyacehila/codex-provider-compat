@@ -186,8 +186,6 @@ Lite 还会影响 instructions、并行工具调用、reasoning context、图片
 
 补丁只能恢复标准工具定义，不能替 provider 实现它没有的能力。自动测试覆盖 Windows PowerShell 5.1/7、macOS shell/JXA、catalog 与 TOML 完整性、路径安全、失败恢复、Release 压缩包，以及固定 Codex CLI 到 localhost 的 Lite/标准请求形态。
 
-维护者还在 Windows 临时 Codex home 中测试了一个匿名真实 Responses provider。已记录的验收结果中，三个模型都通过了普通文本和多轮测试；Sol、Terra 通过了 shell/exec；三个模型都通过了协作测试；Sol 完成了本地 MCP 调用和结果回传。该 provider 的图片输入失败。code mode 的可观测证据、app-server dynamic function、显式 original 图片 detail 和图片生成仍是 `not-run`，原因是现有客户端路径无法同时满足凭据隔离或确定性取证要求。测试没有公开凭据、端点、原始请求或原始响应，真实 Codex home 前后也没有变化。
-
 目前没有可用的真实 Mac Desktop 环境，因此 macOS Codex Desktop 行为同样标记为 `not-run`。一个 provider 的结果不能代表所有 OpenAI-compatible 服务。
 
 项目使用 [MIT License](LICENSE)。运行时下载的完整模型目录来自 Apache-2.0 的 [`openai/codex`](https://github.com/openai/codex) 仓库，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
