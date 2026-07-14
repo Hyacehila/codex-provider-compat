@@ -5,7 +5,7 @@
 set -u
 umask 077
 
-TOOL_VERSION=0.2.0
+TOOL_VERSION=0.2.1
 PATCH_ID=responses-lite-standard-tools
 MAX_CATALOG_BYTES=5242880
 MIN_CATALOG_MODELS=8

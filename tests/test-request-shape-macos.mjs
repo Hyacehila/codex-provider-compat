@@ -399,7 +399,7 @@ try {
   const statePath = path.join(paths.codexHome, 'provider-compat-state.json');
   const state = JSON.parse(await fsp.readFile(statePath, 'utf8'));
   assert.equal(state.patch_id, 'responses-lite-standard-tools');
-  assert.equal(state.patch_version, '0.2.0');
+  assert.equal(state.patch_version, '0.2.1');
   assert.equal(state.codex_version, EXPECTED_VERSION);
   assert.equal(state.source_catalog.sha256, EXPECTED_CATALOG_SHA256);
   assert.equal(state.config.web_search_modified, false);

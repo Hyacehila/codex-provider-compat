@@ -4,7 +4,7 @@
 # Copyright (c) 2026 codex-provider-compat contributors
 
 $ErrorActionPreference = 'Stop'
-$script:ToolVersion = '0.2.0'
+$script:ToolVersion = '0.2.1'
 $script:PatchId = 'responses-lite-standard-tools'
 $script:TargetModels = @('gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna')
 $script:TrackedConfigKeys = @('model_catalog_json', 'web_search', 'model', 'model_provider', 'openai_base_url')

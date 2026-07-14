@@ -600,7 +600,7 @@ try {
     Assert-True (Test-Path -LiteralPath $statePath -PathType Leaf) 'apply did not create state'
     $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
     Assert-Equal 'responses-lite-standard-tools' $state.patch_id 'state patch_id'
-    Assert-Equal '0.2.0' $state.patch_version 'state patch_version'
+    Assert-Equal '0.2.1' $state.patch_version 'state patch_version'
     Assert-Equal $script:ExpectedCodexVersion $state.codex_version 'state Codex version'
     Assert-Equal $script:ExpectedCatalogSha256 ([string]$state.source_catalog.sha256).ToUpperInvariant() 'state source catalog hash'
     Assert-True (Test-Path -LiteralPath $state.generated_catalog.path -PathType Leaf) 'generated catalog is missing'

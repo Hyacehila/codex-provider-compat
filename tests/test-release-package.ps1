@@ -92,22 +92,22 @@ function Assert-PackageReadme {
     }
 
     if ($Platform -eq 'windows') {
-        foreach ($required in @('Get-FileHash', 'powershell.exe', 'codex-provider-compat.ps1', 'codex-provider-compat-v0.2.0-windows.zip')) {
+        foreach ($required in @('Get-FileHash', 'powershell.exe', 'codex-provider-compat.ps1', 'codex-provider-compat-v0.2.1-windows.zip')) {
             Assert-True ($text.Contains($required)) "Windows package README is missing: $required"
         }
-        Assert-True (-not $text.Contains('codex-provider-compat-v0.2.0-macos.zip')) 'Windows package README must not direct users to the macOS archive'
+        Assert-True (-not $text.Contains('codex-provider-compat-v0.2.1-macos.zip')) 'Windows package README must not direct users to the macOS archive'
     }
     else {
-        foreach ($required in @('shasum -a 256', 'chmod +x', 'codex-provider-compat.sh', 'codex-provider-compat-v0.2.0-macos.zip')) {
+        foreach ($required in @('shasum -a 256', 'chmod +x', 'codex-provider-compat.sh', 'codex-provider-compat-v0.2.1-macos.zip')) {
             Assert-True ($text.Contains($required)) "macOS package README is missing: $required"
         }
-        Assert-True (-not $text.Contains('codex-provider-compat-v0.2.0-windows.zip')) 'macOS package README must not direct users to the Windows archive'
+        Assert-True (-not $text.Contains('codex-provider-compat-v0.2.1-windows.zip')) 'macOS package README must not direct users to the Windows archive'
     }
 }
 
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $builder = Join-Path $repoRoot 'scripts/build-release.ps1'
-$version = '0.2.0'
+$version = '0.2.1'
 $prefix = "codex-provider-compat-v$version"
 $expectedAssets = @(
     'codex-provider-compat.ps1',
@@ -156,7 +156,7 @@ try {
     $null = New-Item -ItemType Directory -Path $mismatchOutput
     $mismatchFailed = $false
     try {
-        & $builder -Version '0.2.1' -OutputDirectory $mismatchOutput
+        & $builder -Version '0.2.2' -OutputDirectory $mismatchOutput
     }
     catch {
         $mismatchFailed = $true

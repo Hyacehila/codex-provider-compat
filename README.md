@@ -2,7 +2,7 @@
 
 Restore missing Codex tools when GPT-5.6 Sol, Terra, or Luna is used through a custom OpenAI-compatible provider.
 
-[简体中文](README.zh-CN.md) · [Download v0.2.0](https://github.com/Hyacehila/codex-provider-compat/releases/tag/v0.2.0) · [Automated tests](https://github.com/Hyacehila/codex-provider-compat/actions/workflows/test.yml)
+[简体中文](README.zh-CN.md) · [Download v0.2.1](https://github.com/Hyacehila/codex-provider-compat/releases/tag/v0.2.1) · [Automated tests](https://github.com/Hyacehila/codex-provider-compat/actions/workflows/test.yml)
 
 You may need this tool if Codex can still chat, but after selecting one of those models it no longer:
 
@@ -53,26 +53,26 @@ The patch targets only GPT-5.6 Sol (`gpt-5.6-sol`), Terra (`gpt-5.6-terra`), and
 
 Always run `doctor` first. It checks local versions, configuration, and safety without writing files. If the script cannot prove that a change is safe, it stops and leaves the active configuration alone.
 
-#### Download and verify v0.2.0
+#### Download and verify v0.2.1
 
-Open the [v0.2.0 Release page](https://github.com/Hyacehila/codex-provider-compat/releases/tag/v0.2.0), then download `SHA256SUMS.txt` and the ZIP for your platform:
+Open the [v0.2.1 Release page](https://github.com/Hyacehila/codex-provider-compat/releases/tag/v0.2.1), then download `SHA256SUMS.txt` and the ZIP for your platform:
 
 | Platform | File |
 |---|---|
-| Windows | `codex-provider-compat-v0.2.0-windows.zip` |
-| macOS | `codex-provider-compat-v0.2.0-macos.zip` |
+| Windows | `codex-provider-compat-v0.2.1-windows.zip` |
+| macOS | `codex-provider-compat-v0.2.1-macos.zip` |
 
 Verify the Windows ZIP:
 
 ```powershell
-(Get-FileHash .\codex-provider-compat-v0.2.0-windows.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+(Get-FileHash .\codex-provider-compat-v0.2.1-windows.zip -Algorithm SHA256).Hash.ToLowerInvariant()
 Get-Content .\SHA256SUMS.txt
 ```
 
 Verify the macOS ZIP:
 
 ```sh
-shasum -a 256 ./codex-provider-compat-v0.2.0-macos.zip
+shasum -a 256 ./codex-provider-compat-v0.2.1-macos.zip
 cat ./SHA256SUMS.txt
 ```
 
@@ -130,7 +130,7 @@ If `doctor` or `status` reports `recovery-required`, do not delete lock, transac
 
 After a Codex update, run `status` and `doctor` again. Do not keep an old catalog override across an unreviewed version change.
 
-If you used the removed v0.1.1 `--enable-web-search` option and want the tool to stop owning that legacy change, use v0.2.0 to run `rollback`, restart Codex, then run a normal `apply` and restart into a new task. The new version does not alter your search setting.
+If you used the removed v0.1.1 `--enable-web-search` option and want the tool to stop owning that legacy change, use v0.2.0 or later to run `rollback`, restart Codex, then run a normal `apply` and restart into a new task. The new version does not alter your search setting.
 
 #### Commands and automation
 
