@@ -165,14 +165,14 @@ jobs:
       - name: Install fixed Codex CLI
         shell: pwsh
         run: |
-          npm install --global --no-audit --no-fund @openai/codex@0.144.1
+          npm install --global --no-audit --no-fund @openai/codex@0.144.3
           $npmRoot = (npm root -g).Trim()
           $candidates = @(Get-ChildItem -LiteralPath (Join-Path $npmRoot '@openai\codex\node_modules') -Recurse -Filter codex.exe -File |
             Where-Object FullName -Match '[\\/]bin[\\/]codex\.exe$')
           if ($candidates.Count -ne 1) { throw "expected one native codex.exe, found $($candidates.Count)" }
           "CODEX_BIN=$($candidates[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $version = & $candidates[0].FullName --version
-          if ($LASTEXITCODE -ne 0 -or $version.Trim() -ne 'codex-cli 0.144.1') { throw "unexpected Codex version: $version" }
+          if ($LASTEXITCODE -ne 0 -or $version.Trim() -ne 'codex-cli 0.144.3') { throw "unexpected Codex version: $version" }
       - name: Fixed Codex localhost request-shape gate
         shell: pwsh
         run: |
@@ -193,17 +193,17 @@ jobs:
       - name: Install fixed macOS Codex CLI
         run: |
           set -eu
-          npm install --global --no-audit --no-fund @openai/codex@0.144.1
+          npm install --global --no-audit --no-fund @openai/codex@0.144.3
           CODEX_BIN=$(command -v codex)
           case "$CODEX_BIN" in /*) ;; *) printf '%s\n' "Codex path is not absolute: $CODEX_BIN" >&2; exit 1 ;; esac
-          test "$("$CODEX_BIN" --version)" = 'codex-cli 0.144.1'
+          test "$("$CODEX_BIN" --version)" = 'codex-cli 0.144.3'
           printf 'CODEX_BIN=%s\n' "$CODEX_BIN" >> "$GITHUB_ENV"
       - name: Fixed macOS Codex localhost request-shape gate
         run: |
           set -eu
           /bin/sh -n ./codex-provider-compat.sh
           node --check ./tests/test-request-shape-macos.mjs
-          test "$(/usr/bin/shasum -a 256 ./tests/fixtures/models-0.144.1-official.json | /usr/bin/awk '{print toupper($1)}')" = 'DCAB00231A5178A9C84B7AEF4CC06A1E1359E37EE0DD7E69D5822C4B1DE723B1'
+          test "$(/usr/bin/shasum -a 256 ./tests/fixtures/models-0.144.3-official.json | /usr/bin/awk '{print toupper($1)}')" = 'DCAB00231A5178A9C84B7AEF4CC06A1E1359E37EE0DD7E69D5822C4B1DE723B1'
           node ./tests/test-request-shape-macos.mjs
 
   macos:

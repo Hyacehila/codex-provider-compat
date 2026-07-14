@@ -428,16 +428,31 @@ warn_running_codex() {
 }
 
 select_version() {
+  VERSION_SELECTION_ERROR=
   if [ -n "$CODEX_VERSION" ]; then
     printf '%s\n' "$CODEX_VERSION" |
-      /usr/bin/awk '/^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/{ok=1} END{exit !ok}' || return 1
+      /usr/bin/awk '/^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/{ok=1} END{exit !ok}' || {
+        VERSION_SELECTION_ERROR="invalid Codex version: $CODEX_VERSION"
+        return 1
+      }
     SELECTED_VERSION=$CODEX_VERSION
     return 0
   fi
   versions=$(/usr/bin/awk -F '\t' '$3!=""&&!seen[$3]++{print $3}' "$TMP_ROOT/versions")
   count=$(printf '%s\n' "$versions" | /usr/bin/awk 'NF{n++}END{print n+0}')
-  [ "$count" -eq 1 ] || return 1
-  printf '%s\n' "$versions" | /usr/bin/awk '/^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/{ok=1}END{exit !ok}' || return 1
+  if [ "$count" -eq 0 ]; then
+    VERSION_SELECTION_ERROR='could not detect Codex version; use --codex-version'
+    return 1
+  fi
+  if [ "$count" -ne 1 ]; then
+    joined=$(printf '%s\n' "$versions" | /usr/bin/awk 'NF{if(out!="")out=out", ";out=out$0}END{print out}')
+    VERSION_SELECTION_ERROR="conflicting Codex versions detected: $joined. Codex surfaces can update independently but share one Codex home and model catalog; use --codex-version only for the CLI or Desktop surface you will fully restart"
+    return 1
+  fi
+  printf '%s\n' "$versions" | /usr/bin/awk '/^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/{ok=1}END{exit !ok}' || {
+    VERSION_SELECTION_ERROR="invalid detected Codex version: $versions"
+    return 1
+  }
   SELECTED_VERSION=$versions
 }
 
@@ -1710,7 +1725,7 @@ doctor() {
   warn_running_codex
   if ! select_version; then
     count=$(/usr/bin/awk -F '\t' '$3!=""&&!seen[$3]++{n++}END{print n+0}' "$TMP_ROOT/versions")
-    warn 'could not select one Codex version'
+    warn "${VERSION_SELECTION_ERROR:-could not select Codex version; use --codex-version}"
     if [ "$count" -eq 0 ]; then info 'result=unknown'; else info 'result=unsafe'; fi
     return $EX_UNSAFE
   fi
@@ -1795,6 +1810,7 @@ status_cmd() {
     :
   else
     count=$(/usr/bin/awk -F '\t' '$3!=""&&!seen[$3]++{n++}END{print n+0}' "$TMP_ROOT/versions")
+    warn "${VERSION_SELECTION_ERROR:-could not select Codex version; use --codex-version}"
     if [ "$count" -eq 0 ]; then info 'result=unknown'; else info 'result=unsafe'; fi
     return $EX_UNSAFE
   fi
@@ -1818,7 +1834,7 @@ apply_cmd() {
   discover_versions
   show_versions
   warn_running_codex
-  select_version || { warn 'conflicting or missing Codex version; use --codex-version'; return $EX_UNSAFE; }
+  select_version || { warn "${VERSION_SELECTION_ERROR:-could not select Codex version; use --codex-version}"; return $EX_UNSAFE; }
   if transaction_exists; then
     [ "$DRY_RUN" -eq 0 ] || { info 'result=recovery-required'; return $EX_UNSAFE; }
     ensure_home || return $EX_UNSAFE

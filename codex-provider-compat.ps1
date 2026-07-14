@@ -659,7 +659,7 @@ function Select-CodexVersion([string]$Explicit,$Discovered,[bool]$ForWrite){
     if(-not[string]::IsNullOrWhiteSpace($Explicit)){if($Explicit -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$'){throw "invalid Codex version: $Explicit"};return $Explicit}
     $versions=@($Discovered|Where-Object{$_.Version}|Select-Object -ExpandProperty Version -Unique)
     if($versions.Count -eq 1){return $versions[0]};if($versions.Count -eq 0){if($ForWrite){throw 'could not detect Codex version; use --codex-version'};return $null}
-    throw('conflicting Codex versions detected: '+($versions -join ', ')+'; use --codex-version')
+    throw('conflicting Codex versions detected: '+($versions -join ', ')+'. Codex surfaces can update independently but share one Codex home and model catalog; use --codex-version only for the CLI or Desktop surface you will fully restart')
 }
 
 function Get-JsonProperties($Object){

@@ -1311,8 +1311,14 @@ t_version_and_network() {
   assert_eq 0 "$RUN_CODE" actual-cli-rollback || return 1
   new_home versions
   h=$NEW_HOME
-  run_tool_env CODEX_PROVIDER_COMPAT_TEST_VERSIONS 'cli=0.144.1;desktop=0.143.0' apply --yes --codex-home "$h" --catalog-file "$FIXTURES/models-valid.json"
+  run_tool_env CODEX_PROVIDER_COMPAT_TEST_VERSIONS 'PATH CLI=0.144.3;Desktop runtime=0.144.2;Codex home app-server=0.144.2' apply --yes --codex-home "$h" --catalog-file "$FIXTURES/models-valid.json"
   assert_eq 3 "$RUN_CODE" conflict || return 1
+  assert_contains "$RUN_OUT" 'version source: PATH CLI -> 0.144.3' || return 1
+  assert_contains "$RUN_OUT" 'version source: Desktop runtime -> 0.144.2' || return 1
+  assert_contains "$RUN_OUT" 'version source: Codex home app-server -> 0.144.2' || return 1
+  assert_contains "$RUN_OUT" 'Codex surfaces can update independently but share one Codex home and model catalog' || return 1
+  assert_contains "$RUN_OUT" 'use --codex-version only for the CLI or Desktop surface you will fully restart' || return 1
+  [ "$(find "$h" -type f | /usr/bin/wc -l | tr -d ' ')" = 0 ] || return 1
   new_home cli-only
   h=$NEW_HOME
   /bin/cp "$FIXTURES/config-basic.toml" "$h/config.toml"
@@ -1330,7 +1336,7 @@ t_version_and_network() {
   new_home same-version
   h=$NEW_HOME
   /bin/cp "$FIXTURES/config-basic.toml" "$h/config.toml"
-  run_tool_env CODEX_PROVIDER_COMPAT_TEST_VERSIONS 'cli=0.144.1;desktop=0.144.1' apply --yes --codex-home "$h" --catalog-file "$FIXTURES/models-valid.json"
+  run_tool_env CODEX_PROVIDER_COMPAT_TEST_VERSIONS 'PATH CLI=0.144.3;Desktop runtime=0.144.3;Codex home app-server=0.144.3' apply --yes --codex-home "$h" --catalog-file "$FIXTURES/models-valid.json"
   assert_eq 0 "$RUN_CODE" same-version || return 1
   rollback_default "$h"
   assert_eq 0 "$RUN_CODE" same-rollback || return 1

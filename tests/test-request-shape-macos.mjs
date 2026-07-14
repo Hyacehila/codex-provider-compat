@@ -11,12 +11,12 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const EXPECTED_VERSION = '0.144.1';
+const EXPECTED_VERSION = '0.144.3';
 const EXPECTED_CATALOG_SHA256 = 'DCAB00231A5178A9C84B7AEF4CC06A1E1359E37EE0DD7E69D5822C4B1DE723B1';
 const TARGET_MODELS = ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'];
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const toolPath = path.join(repoRoot, 'codex-provider-compat.sh');
-const catalogPath = path.join(repoRoot, 'tests', 'fixtures', 'models-0.144.1-official.json');
+const catalogPath = path.join(repoRoot, 'tests', 'fixtures', 'models-0.144.3-official.json');
 
 function hasOwn(value, key) {
   return value !== null && typeof value === 'object' && Object.prototype.hasOwnProperty.call(value, key);
@@ -365,7 +365,7 @@ try {
     assert.equal(matches.length, 1);
     assert.equal(matches[0].use_responses_lite, true);
   }
-  console.log('PASS pinned official 0.144.1 catalog fixture and SHA-256');
+  console.log('PASS pinned official 0.144.3 catalog fixture and SHA-256');
 
   const codexBinary = process.env.CODEX_BIN;
   assert(codexBinary && path.isAbsolute(codexBinary), 'CODEX_BIN must be an absolute path');

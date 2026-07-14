@@ -143,6 +143,8 @@ If you used the removed v0.1.1 `--enable-web-search` option and want the tool to
 
 Both scripts accept `--yes`, `--dry-run`, `--codex-home <absolute-path>`, `--codex-version <version>`, and `--catalog-file <absolute-path>`. Most users need none of these. Codex home and version are discovered automatically; a version conflict stops `apply`.
 
+The standalone CLI, Codex Desktop, and app-server components can update independently while sharing one Codex home and model catalog. When different versions are detected, the tool refuses to choose automatically. Use `--codex-version` only when you know which CLI or Desktop surface you will fully restart and use after applying the patch.
+
 | Exit | Meaning |
 |---:|---|
 | 0 | Success or healthy state |

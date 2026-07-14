@@ -5,12 +5,12 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
     throw 'The request-shape integration test requires PowerShell 7 or later.'
 }
 
-$script:ExpectedCodexVersion = '0.144.1'
+$script:ExpectedCodexVersion = '0.144.3'
 $script:ExpectedCatalogSha256 = 'DCAB00231A5178A9C84B7AEF4CC06A1E1359E37EE0DD7E69D5822C4B1DE723B1'
 $script:TargetModels = @('gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna')
 $script:RepoRoot = Split-Path -Parent $PSScriptRoot
 $script:ToolPath = Join-Path $script:RepoRoot 'codex-provider-compat.ps1'
-$script:CatalogFixturePath = Join-Path $PSScriptRoot 'fixtures\models-0.144.1-official.json'
+$script:CatalogFixturePath = Join-Path $PSScriptRoot 'fixtures\models-0.144.3-official.json'
 $script:PowerShellPath = (Get-Process -Id $PID).Path
 
 function Assert-True($Value, [string]$Message) {
@@ -562,9 +562,9 @@ $failure = $null
 
 try {
     [IO.Directory]::CreateDirectory($codexHome) | Out-Null
-    $officialCatalog = Join-Path $testRoot 'models-0.144.1.official.json'
+    $officialCatalog = Join-Path $testRoot 'models-0.144.3.official.json'
     Get-PinnedCatalog $officialCatalog
-    Write-Host 'PASS pinned official 0.144.1 catalog and SHA-256'
+    Write-Host 'PASS pinned official 0.144.3 catalog and SHA-256'
 
     $codexBinary = Resolve-CodexBinary
     $versionResult = Invoke-IsolatedProcess -FilePath $codexBinary -Arguments @('--version') -CodexHome $codexHome -TimeoutSeconds 15

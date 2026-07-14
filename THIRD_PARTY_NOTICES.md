@@ -3,8 +3,8 @@
 This unofficial tool can download the complete model catalog from the official
 [`openai/codex`](https://github.com/openai/codex) repository at the tag that
 exactly matches the detected Codex version. The pinned integration-test fixture
-`tests/fixtures/models-0.144.1-official.json` is an unmodified copy of that
-catalog from tag `rust-v0.144.1`.
+`tests/fixtures/models-0.144.3-official.json` is an unmodified copy of that
+catalog from tag `rust-v0.144.3`.
 
 OpenAI Codex is licensed under the Apache License 2.0. A copy is provided in
 [`LICENSES/Apache-2.0.txt`](LICENSES/Apache-2.0.txt), and the upstream notice
