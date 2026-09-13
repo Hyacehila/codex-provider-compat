@@ -20,6 +20,14 @@
 
 > 这是一个非官方社区项目，不是 OpenAI 产品，也不代表 OpenAI 或任何 API provider。
 
+## 项目现状
+
+本项目最初用于缓解部分自定义 OpenAI-compatible provider 在使用 Responses Lite 模型时可能出现的 Codex 工具调用兼容性问题。
+
+自本项目发布以来，多个上游网关和中转项目已经加入了针对 Codex Responses Lite 请求格式的兼容处理，或合并了相关修复，包括对 additional_tools 中工具声明的识别、保留或转换。
+
+因此，目前不应再把本补丁视为使用自定义 provider 时默认需要安装的组件。
+
 ## 如何使用
 
 ### 让 AI 帮你处理
