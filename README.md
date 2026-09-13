@@ -20,6 +20,14 @@ download and verify -> doctor -> apply -> fully restart Codex -> create a new ta
 
 > This is an unofficial community project. It is not an OpenAI product and is not endorsed by OpenAI or by any API provider.
 
+## Status
+
+This project was created to work around Codex tool-calling compatibility issues that may occur when Responses Lite models are used through certain custom OpenAI-compatible providers.
+
+Since this project was released, several upstream gateways and proxy projects have added compatibility handling or merged fixes for Codex's Responses Lite request format, including support for tool declarations carried through additional_tools.
+
+As a result, this patch should no longer be treated as a default requirement for using a custom provider.
+
 ## How to use
 
 ### Let your AI handle it
